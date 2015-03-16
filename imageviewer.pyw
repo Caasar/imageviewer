@@ -286,12 +286,13 @@ class WebWrapper(ArchiveWrapper):
     
 def list_archives(folder,recursive=False):
     filelist = ArchiveWrapper.folderlist(folder,'',recursive)
-    sorted(filelist,key=ArchiveWrapper.split_filename)
+    filelist = sorted(filelist,key=ArchiveWrapper.split_filename)
     archlist = []
     for zi in filelist:
         base, ext = os.path.splitext(zi.filename)
         if ext.lower() in ArchiveWrapper.formats:
             archlist.append(zi.filename)
+            
     return archlist
 
 class Settings(QtGui.QDialog):
@@ -565,6 +566,9 @@ class ImageViewer(QtGui.QGraphicsView):
                 self.buffer = {}
                 self.workers = {}
                 self.cur = -1
+                scene = self.scene()
+                scene.clear()
+                scene.setSceneRect(0,0,10,10)
                 self.action_next_image()
             else:
                 path, name = os.path.split(path)
@@ -613,6 +617,7 @@ class ImageViewer(QtGui.QGraphicsView):
         
     def display_image(self, img, center=None, error=''):
         scene = self.scene()
+        was_empty = len(scene.items())==0
         scene.clear()
         center = center or self._mv_start
         if img:
@@ -620,11 +625,16 @@ class ImageViewer(QtGui.QGraphicsView):
             scene.setSceneRect(0,0,w,h)
             self.imgQ = ImageQt.ImageQt(img)  # we need to hold reference to imgQ, or it will crash
             scene.addPixmap(QtGui.QPixmap.fromImage(self.imgQ))
-            self.centerOn(center)    
-            self.label.setText("%d/%d" % (self.cur+1,len(self.imagelist)))
-            self.label.resize(self.label.sizeHint())
-            self.label.show()
-            self.labeltimer.start(self.shorttimeout)
+            self.centerOn(center)
+            if was_empty:
+                self.label.hide()
+                self.action_info()
+                self.labeltimer.start(self.longtimeout)
+            else:
+                self.label.setText("%d/%d" % (self.cur+1,len(self.imagelist)))
+                self.label.resize(self.label.sizeHint())
+                self.label.show()
+                self.labeltimer.start(self.shorttimeout)
         else:
             text = "%d/%d\n%s" % (self.cur+1,len(self.imagelist),error)
             self.label.setText(text)
@@ -802,10 +812,6 @@ class ImageViewer(QtGui.QGraphicsView):
             self.label.resize(self.label.sizeHint())
             self.label.show()
             self.labeltimer.start(self.longtimeout)
-        else:
-            self.label.hide()
-            self.action_info()
-            self.labeltimer.start(self.longtimeout)
             
     
     def action_prev_file(self):
@@ -829,10 +835,6 @@ class ImageViewer(QtGui.QGraphicsView):
             self.label.setText(errormsg)
             self.label.resize(self.label.sizeHint())
             self.label.show()
-            self.labeltimer.start(self.longtimeout)
-        else:
-            self.label.hide()
-            self.action_info()
             self.labeltimer.start(self.longtimeout)
             
         
