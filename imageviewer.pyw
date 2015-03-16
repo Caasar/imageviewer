@@ -90,6 +90,9 @@ class WebImage(object):
         self.next_page = next_page
         dummy, self.filename = os.path.split(self.image_url)
         
+    def __hash__(self):
+        return hash(self.image_url)
+        
 class ImageParser(htmllib.HTMLParser):
     def __init__(self,url):
         htmllib.HTMLParser.__init__(self,formatter.NullFormatter())
@@ -385,6 +388,21 @@ class PageSelect(QtGui.QDialog):
         
         self.value = self.slider.value()-1
 
+class WorkerThread(QtCore.QThread):
+    finished = QtCore.Signal(int)
+    
+    def __init__(self,viewer,pos,center=None):
+        super(WorkerThread,self).__init__(viewer)
+        self.viewer = viewer
+        self.fileinfo = viewer.imagelist[pos]
+        self.pos = pos
+        self.center = center
+        self.error = ''
+        self.img = None
+        
+    def run(self):
+        self.img, self.error = self.viewer.prepare_image(self.fileinfo)
+        self.finished.emit(self.pos)
 
 class ImageViewer(QtGui.QGraphicsView):
     def __init__(self,scene=None):
@@ -401,6 +419,9 @@ class ImageViewer(QtGui.QGraphicsView):
         self.labeltimer.timeout.connect(self.hide_label)
         
         self.pageselect = PageSelect(self)
+        
+        self.workers = {}
+        self.buffer = {}
 
         self.setAcceptDrops(True)
         self.imagelist = []
@@ -530,7 +551,7 @@ class ImageViewer(QtGui.QGraphicsView):
         else:
             return True
     
-    def prepare_image(self,fileinfo):
+    def prepare_image_old(self,fileinfo):
         with self.farch.open(fileinfo,'rb') as fin:
             try:
                 img = Image.open(fin).convert('RGB')
@@ -563,20 +584,59 @@ class ImageViewer(QtGui.QGraphicsView):
             
         return img
 
-    def display_image(self, img):
+    def prepare_image(self,fileinfo):
+        with self.farch.open(fileinfo,'rb') as fin:
+            try:
+                img = Image.open(fin).convert('RGB')
+            except IOError as err:
+                return None, err.message
+        
+        csize = None
+        width, height = img.size
+        ratio = width/height
+        view_rect = self.viewport().rect()
+        swidth, sheight = view_rect.width(), view_rect.height()
+    
+        if ratio < 3.0:
+            width = int(ratio*self.defheight)
+            height = self.defheight
+            csize = width, height
+            
+        oversize_h = width/swidth
+        requiredperc = self.requiredoverlap/100.0
+
+        if self.optimizeview and (oversize_h%1.0) < requiredperc:
+            csize = int(oversize_h)*swidth, int(int(oversize_h)*swidth/ratio)
+        
+        if csize is not None:
+            img = img.resize(csize,Image.ANTIALIAS)
+            
+        return img, ''
+        
+    def queue_image(self,pos,center):
+        if pos in self.buffer and self.cur == pos:
+            self.display_image(self.buffer[pos],center)
+        elif pos not in self.buffer:
+            self.workers[pos] = worker = WorkerThread(self,pos,center)
+            worker.finished.connect(self.action_work_end)
+            worker.start()
+
+    def display_image(self, img, center=None, error=''):
         scene = self.scene()
         scene.clear()
+        center = center or self._mv_start
         if img:
             w, h = img.size
             scene.setSceneRect(0,0,w,h)
             self.imgQ = ImageQt.ImageQt(img)  # we need to hold reference to imgQ, or it will crash
             scene.addPixmap(QtGui.QPixmap.fromImage(self.imgQ))
+            self.centerOn(center)    
             self.label.setText("%d/%d" % (self.cur+1,len(self.imagelist)))
             self.label.resize(self.label.sizeHint())
             self.label.show()
             self.labeltimer.start(self.shorttimeout)
         else:
-            text = "%d/%d\n%s" % (self.cur+1,len(self.imagelist),self.label.text())
+            text = "%d/%d\n%s" % (self.cur+1,len(self.imagelist),error)
             self.label.setText(text)
             self.label.resize(self.label.sizeHint())
             scene.setSceneRect(0,0,10,10)
@@ -635,6 +695,14 @@ class ImageViewer(QtGui.QGraphicsView):
     def closeEvent(self,e):
         self.save_settings()
         super(ImageViewer,self).closeEvent(e)
+        
+    def action_work_end(self,pos):
+        worker = self.workers.pop(pos)
+        if worker.img:
+            self.buffer[worker.pos] = worker.img
+        
+        if pos == self.cur:
+            self.display_image(worker.img,worker.center,worker.error)
 
     def action_open(self):
         archives = ' '.join('*%s' % ext for ext in ArchiveWrapper.formats)
@@ -662,9 +730,7 @@ class ImageViewer(QtGui.QGraphicsView):
         self.pageselect.set_range(self.cur,self.imagelist)
         if self.pageselect.exec_():
             self.cur = self.pageselect.value
-            img = self.prepare_image(self.imagelist[self.cur])
-            self.display_image(img)
-            self.centerOn(self._mv_start)            
+            self.queue_image(self.cur,self._mv_start)
         
     def action_info(self):
         if self.label.isHidden() and self.imagelist:
@@ -751,9 +817,7 @@ class ImageViewer(QtGui.QGraphicsView):
     def action_next_image(self):
         if self.imagelist and (self.cur+1) < len(self.imagelist):
             self.cur += 1
-            img = self.prepare_image(self.imagelist[self.cur])
-            self.display_image(img)
-            self.centerOn(self._mv_start)
+            self.queue_image(self.cur,self._mv_start)
         elif self.imagelist:
             self.label.setText(self.tr("No further images in this archive"))
             self.label.resize(self.label.sizeHint())
@@ -763,9 +827,7 @@ class ImageViewer(QtGui.QGraphicsView):
     def action_prev_image(self):
         if self.imagelist and self.cur > 0:
             self.cur -= 1
-            img = self.prepare_image(self.imagelist[self.cur])
-            self.display_image(img)
-            self.centerOn(self._mv_end)
+            self.queue_image(self.cur,self._mv_end)
         elif self.imagelist:
             self.label.setText(self.tr("No previous images in this archive"))
             self.label.resize(self.label.sizeHint())
