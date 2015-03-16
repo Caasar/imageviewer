@@ -343,7 +343,7 @@ class ImageViewer(QtGui.QGraphicsView):
         ld = QtGui.QAction(self.tr("Left Down"),actions['movement'],checkable=True)
         dr = QtGui.QAction(self.tr("Down Right"),actions['movement'],checkable=True)
         dl = QtGui.QAction(self.tr("Down Left"),actions['movement'],checkable=True)
-                         
+        
         lt = QtCore.QPointF(0,0)
         rt = QtCore.QPointF(INF_POINT,0)
         lb = QtCore.QPointF(0,INF_POINT)
@@ -377,26 +377,35 @@ class ImageViewer(QtGui.QGraphicsView):
             success : returns ``True`` if images could be loaded and ``False``
                       if no images could be found in the archive.
         """
-        farch = ArchiveWrapper(path,'r')
-        imagelist = []
-        for zi  in farch.filelist:
-            name, ext = os.path.splitext(zi.filename)
-            if ext.lower() in Image.EXTENSION:
-                imagelist.append(zi)
+        try:
+            errormsg = ''
+            farch = ArchiveWrapper(path,'r')
+            imagelist = []
+            for zi  in farch.filelist:
+                name, ext = os.path.splitext(zi.filename)
+                if ext.lower() in Image.EXTENSION:
+                    imagelist.append(zi)
+                    
+            if imagelist:
+                self.farch = farch
+                self.imagelist = imagelist
+                self.cur = -1
+                self.action_next_image()
+            else:
+                path, name = os.path.split(path)
+                errormsg = self.tr('No images found in "%s"') % name
                 
-        if imagelist:
-            self.farch = farch
-            self.imagelist = imagelist
-            self.cur = -1
-            self.action_next_image()
-            return True
-        else:
-            path, name = os.path.split(path)
-            self.label.setText('No images found in "%s"' % name)
+        except ValueError as err:
+            errormsg = err.message
+        
+        if errormsg:
+            self.label.setText(errormsg)
             self.label.resize(self.label.sizeHint())
             self.label.show()
             self.labeltimer.start(self.longtimeout)
             return False
+        else:
+            return True
     
     def prepare_image(self,fileinfo):
         with self.farch.open(fileinfo,'rb') as fin:
