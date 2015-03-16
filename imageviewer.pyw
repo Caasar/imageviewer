@@ -83,19 +83,18 @@ class ArchiveWrapper(object):
             self.handle = None
             self.filelist = self.folderlist(path)
         else:
-            raise ValueError('"%s" is not a supported archive' % path)
+            raise IOError('"%s" is not a supported archive' % path)
         
         self.filelist = sorted(self.filelist,key=ArchiveWrapper.split_filename)
     
     def open(self,fileinfo,mode):
         if mode in {'a','w'} and self.mode[0] == 'r':
-            raise ValueError('Child mode does not fit to mode of Archive')
+            raise IOError('Child mode does not fit to mode of Archive')
             
         if self.handle:
             return ArchiveIO(fileinfo,mode,self)
         else:
             fullpath = os.path.join(self.path,fileinfo.filename)
-            print 'open', fullpath
             return open(fullpath,mode)
     
     def close(self):
@@ -260,14 +259,14 @@ class PageSelect(QtGui.QDialog):
 
 
 class ImageViewer(QtGui.QGraphicsView):
-    def __init__(self,archives=None,scene=None):
+    def __init__(self,scene=None):
         super(ImageViewer,self).__init__(scene)
         self.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
         self.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
         self.setDragMode(QtGui.QGraphicsView.ScrollHandDrag)
         self.setWindowTitle(self.tr("Image Viewer"))
  
-        self.label = QtGui.QLabel('Nothing to show\nOpen an image archive',self)
+        self.label = QtGui.QLabel(self.tr('Nothing to show\nOpen an image archive'),self)
         self.label.setStyleSheet("QLabel { background-color : black; color : white; padding: 5px 5px 5px 5px;border-radius: 5px; }")
         self.label.move(10,10)
         self.labeltimer = QtCore.QTimer(self)
@@ -361,9 +360,6 @@ class ImageViewer(QtGui.QGraphicsView):
                 self.addAction(act)
         self.actions = actions
         
-        if archives:
-            self.load_archive(archives[0])
-        
     def load_archive(self,path):
         """
         load the images in the archive given py path and show the first one.
@@ -395,7 +391,7 @@ class ImageViewer(QtGui.QGraphicsView):
                 path, name = os.path.split(path)
                 errormsg = self.tr('No images found in "%s"') % name
                 
-        except ValueError as err:
+        except IOError as err:
             errormsg = err.message
         
         if errormsg:
@@ -409,7 +405,14 @@ class ImageViewer(QtGui.QGraphicsView):
     
     def prepare_image(self,fileinfo):
         with self.farch.open(fileinfo,'rb') as fin:
-            img = Image.open(fin).convert('RGB')
+            try:
+                img = Image.open(fin).convert('RGB')
+            except IOError as err:
+                self.label.setText(err.message)
+                self.label.resize(self.label.sizeHint())
+                self.label.show()
+                self.labeltimer.start(self.longtimeout)
+                return None
         
         csize = None
         width, height = img.size
@@ -436,15 +439,20 @@ class ImageViewer(QtGui.QGraphicsView):
     def display_image(self, img):
         scene = self.scene()
         scene.clear()
-        w, h = img.size
-        scene.setSceneRect(0,0,w,h)
-        self.imgQ = ImageQt.ImageQt(img)  # we need to hold reference to imgQ, or it will crash
-        scene.addPixmap(QtGui.QPixmap.fromImage(self.imgQ))
-        self.label.setText("%d/%d" % (self.cur+1,len(self.imagelist)))
-        self.label.resize(self.label.sizeHint())
-        self.label.show()
-        self.labeltimer.start(self.shorttimeout)
-        #scene.update()
+        if img:
+            w, h = img.size
+            scene.setSceneRect(0,0,w,h)
+            self.imgQ = ImageQt.ImageQt(img)  # we need to hold reference to imgQ, or it will crash
+            scene.addPixmap(QtGui.QPixmap.fromImage(self.imgQ))
+            self.label.setText("%d/%d" % (self.cur+1,len(self.imagelist)))
+            self.label.resize(self.label.sizeHint())
+            self.label.show()
+            self.labeltimer.start(self.shorttimeout)
+        else:
+            text = "%d/%d\n%s" % (self.cur+1,len(self.imagelist),self.label.text())
+            self.label.setText(text)
+            self.label.resize(self.label.sizeHint())
+            scene.setSceneRect(0,0,10,10)
         
     def hide_label(self):
         self.actions['info'].setChecked(QtCore.Qt.Unchecked)
@@ -804,10 +812,13 @@ if __name__ == "__main__":
     app = QtGui.QApplication(sys.argv[:1])
     scene = QtGui.QGraphicsScene()
     scene.setBackgroundBrush(QtCore.Qt.black)
-    view = ImageViewer(sys.argv[1:],scene)
+    view = ImageViewer(scene)
     if view.load_settings():
         view.showFullScreen()
     else:
         view.show()
+    
+    if len(sys.argv) > 1:
+        view.load_archive(sys.argv[1])
     sys.exit(app.exec_())
     
