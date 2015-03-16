@@ -14,7 +14,6 @@ from PySide import QtCore, QtGui
 from StringIO import StringIO
 import PIL.Image as Image
 import PIL.ImageQt as ImageQt
-import PIL.ImageEnhance as ImageEnhance 
 
 Image.init()
 
@@ -285,7 +284,8 @@ def list_archives(folder,recursive=False):
 
 class Settings(QtGui.QDialog):
     settings = {'defheight':1600,'shorttimeout':1000,'longtimeout':2000,
-                'optimizeview':True,'requiredoverlap':50,'preload':5}
+                'optimizeview':True,'requiredoverlap':50,'preload':5,
+                'buffernumber':10}
                 
     def __init__(self,settings,parent=None):
         super(Settings,self).__init__(parent)
@@ -294,6 +294,7 @@ class Settings(QtGui.QDialog):
         #self.resize(640, 80)
         
         self.preload = QtGui.QLineEdit(self)
+        self.buffernumber = QtGui.QLineEdit(self)
         self.defheight = QtGui.QLineEdit(self)
         self.optview = QtGui.QCheckBox(self.tr("&Optimize Size"),self)
         self.shorttimeout = QtGui.QLineEdit(self)
@@ -301,6 +302,7 @@ class Settings(QtGui.QDialog):
         self.requiredoverlap = QtGui.QLineEdit(self)
 
         self.preload.setValidator(QtGui.QIntValidator())
+        self.buffernumber
         self.shorttimeout.setValidator(QtGui.QIntValidator())
         self.longtimeout.setValidator(QtGui.QIntValidator())
         self.defheight.setValidator(QtGui.QIntValidator())
@@ -311,27 +313,30 @@ class Settings(QtGui.QDialog):
         self.okbuttom = QtGui.QPushButton(self.tr("OK"),self)
         self.okbuttom.clicked.connect(self.accept)
 
-        self.setTabOrder(self.preload,self.shorttimeout)
         self.setTabOrder(self.shorttimeout,self.longtimeout)
         self.setTabOrder(self.longtimeout,self.defheight)
         self.setTabOrder(self.defheight,self.optview)
         self.setTabOrder(self.optview,self.okbuttom)
         self.setTabOrder(self.optview,self.requiredoverlap)
-        self.setTabOrder(self.requiredoverlap,self.okbuttom)
+        self.setTabOrder(self.requiredoverlap,self.preload)
+        self.setTabOrder(self.preload,self.buffernumber)
+        self.setTabOrder(self.buffernumber,self.okbuttom)
         self.setTabOrder(self.okbuttom,self.cancelbuttom)
 
         layout = QtGui.QFormLayout()
-        layout.addRow(self.tr("&Preload Number:"),self.preload)
         layout.addRow(self.tr("&Short Timeout (ms):"),self.shorttimeout)
         layout.addRow(self.tr("&Long Timeout (ms):"),self.longtimeout)
         layout.addRow(self.tr("Defaut &Height (px):"),self.defheight)
         layout.addRow(self.optview)
         layout.addRow(self.tr("Required &Overlap (%):"),self.requiredoverlap)
+        layout.addRow(self.tr("&Preload Number:"),self.preload)
+        layout.addRow(self.tr("&Buffer Number:"),self.buffernumber)
         layout.addRow(self.cancelbuttom,self.okbuttom)
 
         self.setLayout(layout)
         
         self.preload.setText(unicode(settings['preload']))
+        self.buffernumber.setText(unicode(settings['buffernumber']))
         self.defheight.setText(unicode(settings['defheight']))
         self.shorttimeout.setText(unicode(settings['shorttimeout']))
         self.longtimeout.setText(unicode(settings['longtimeout']))
@@ -342,6 +347,7 @@ class Settings(QtGui.QDialog):
     def accept(self):
         settings = {}
         settings['preload'] = int(self.preload.text())
+        settings['buffernumber'] = int(self.buffernumber.text())
         settings['defheight'] = int(self.defheight.text())
         settings['shorttimeout'] = int(self.shorttimeout.text())
         settings['longtimeout'] = int(self.longtimeout.text())
@@ -406,9 +412,11 @@ class WorkerThread(QtCore.QThread):
         self.center = center
         self.error = ''
         self.img = None
+        self.loaded = False
         
     def run(self):
         self.img, self.error = self.viewer.prepare_image(self.fileinfo)
+        self.loaded = True
         self.finished.emit(self.pos)
 
 class ImageViewer(QtGui.QGraphicsView):
@@ -418,6 +426,8 @@ class ImageViewer(QtGui.QGraphicsView):
         self.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
         self.setDragMode(QtGui.QGraphicsView.ScrollHandDrag)
         self.setWindowTitle(self.tr("Image Viewer"))
+        self.setWindowIcon(APP_ICON)
+        self.setFrameShape(self.NoFrame)
  
         self.label = QtGui.QLabel(self.tr('Nothing to show\nOpen an image archive'),self)
         self.label.setStyleSheet("QLabel { background-color : black; color : white; padding: 5px 5px 5px 5px;border-radius: 5px; }")
@@ -429,7 +439,6 @@ class ImageViewer(QtGui.QGraphicsView):
         
         self.workers = {}
         self.buffer = {}
-        self.curbuffersize = 0
 
         self.setAcceptDrops(True)
         self.imagelist = []
@@ -543,7 +552,6 @@ class ImageViewer(QtGui.QGraphicsView):
                 self.imagelist = imagelist
                 self.buffer = {}
                 self.workers = {}
-                self.curbuffersize = 0
                 self.cur = -1
                 self.action_next_image()
             else:
@@ -672,15 +680,13 @@ class ImageViewer(QtGui.QGraphicsView):
         buffering = set(range(self.cur+1,self.cur+self.preload+1))
         buffering &= set(range(len(self.imagelist)))
         loadcandidate = buffering-existing
-        print 'toload', loadcandidate
         
-        if pos in self.workers and self.workers[pos].isFinished():
+        if pos in self.workers and self.workers[pos].loaded:
             worker = self.workers.pop(pos)
+            center = center or worker.center
+            error = worker.error
             if worker.img:
                 self.buffer[pos] = worker.img
-                self.curbuffersize += len(worker.img.getdata())
-            
-            center, error = worker.center, worker.error
             
         if pos not in self.workers and pos not in self.buffer:
             toload = pos
@@ -690,19 +696,23 @@ class ImageViewer(QtGui.QGraphicsView):
             toload = None
             
         if toload is not None:
-            self.workers[toload] = worker = WorkerThread(self,toload)
+            self.workers[toload] = worker = WorkerThread(self,toload,center)
             worker.finished.connect(self.action_queued_image)
             worker.start()
-            
-        if self.cur in self.workers:
-            text = self.tr('Loading "%s" ...') % self.imagelist[toload].filename
+        
+        if self.cur in self.workers and not error:
+            text = self.tr('Loading "%s" ...') % self.imagelist[self.cur].filename
             self.label.setText(text)
             self.label.resize(self.label.sizeHint())
             self.label.show()
 
         if pos == self.cur and pos in self.buffer:
             self.display_image(self.buffer[pos],center,error)
-                        
+            
+        if len(self.buffer) > self.buffernumber:
+            positions = sorted(self.buffer.iterkeys())
+            for pos in positions[:(len(self.buffer)-self.buffernumber)]:
+                del self.buffer[pos]
         
     def action_open(self):
         archives = ' '.join('*%s' % ext for ext in ArchiveWrapper.formats)
@@ -1003,6 +1013,7 @@ class ImageViewer(QtGui.QGraphicsView):
     
 if __name__ == "__main__":
     app = QtGui.QApplication(sys.argv[:1])
+    APP_ICON = QtGui.QIcon('res/image.png')
     scene = QtGui.QGraphicsScene()
     scene.setBackgroundBrush(QtCore.Qt.black)
     view = ImageViewer(scene)
