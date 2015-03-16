@@ -683,7 +683,7 @@ class ImageViewer(QtGui.QGraphicsView):
             event.setDropAction(QtCore.Qt.CopyAction)
             event.accept()
             url = event.mimeData().urls()[0]
-            path = str(url.toLocalFile())
+            path = unicode(url.toLocalFile())
             if path:
                 self.load_archive(path)
             else:
