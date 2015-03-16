@@ -9,7 +9,7 @@ sys.modules['PyQt4'] = PySide # HACK for ImageQt
  
 import zipfile,os,re,time
 import htmllib,formatter,urlparse
-from urllib2 import urlopen
+from urllib2 import urlopen, Request
 from PySide import QtCore, QtGui
 from StringIO import StringIO
 import PIL.Image as Image
@@ -127,9 +127,21 @@ class ImageParser(htmllib.HTMLParser):
         if not self.candidate_img:
             raise IOError('No Image found at "%s"' % self.page_url)
             
-        image_url, next_page_url = self.candidate_img[0]
-        return WebImage(image_url,self.page_url,next_page_url)
+        maxsize = -1
+        for c_url, c_next in self.candidate_img:
+            c_size = int(ImageParser.get_content_length(c_url))
+            if maxsize < c_size:
+                image_url, next_page = c_url, c_next
+                maxsize = c_size
+                
+        return WebImage(image_url,self.page_url,next_page)
         
+    @staticmethod
+    def get_content_length(url):
+        request = Request(url)
+        request.get_method = lambda: "HEAD"
+        return urlopen(request).headers["content-length"]
+
 class ArchiveWrapper(object):
     isnumber = re.compile(r'\d+')
     formats = {'.zip'}
