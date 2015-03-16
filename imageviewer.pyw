@@ -415,7 +415,7 @@ class PageSelect(QtGui.QDialog):
         self.value = self.slider.value()-1
 
 class WorkerThread(QtCore.QThread):
-    finished = QtCore.Signal(int)
+    loaded = QtCore.Signal(int)
     
     def __init__(self,viewer,pos,center=None):
         super(WorkerThread,self).__init__(viewer)
@@ -425,12 +425,14 @@ class WorkerThread(QtCore.QThread):
         self.center = center
         self.error = ''
         self.img = None
-        self.loaded = False
+        self.finished.connect(self.removeParent) # necessary to remove handle in viewer
         
     def run(self):
         self.img, self.error = self.viewer.prepare_image(self.fileinfo)
-        self.loaded = True
-        self.finished.emit(self.pos)
+        self.loaded.emit(self.pos)
+        
+    def removeParent(self):
+        self.setParent(None)
 
 class ImageViewer(QtGui.QGraphicsView):
     def __init__(self,scene=None):
@@ -598,7 +600,7 @@ class ImageViewer(QtGui.QGraphicsView):
         ratio = width/height
         view_rect = self.viewport().rect()
         swidth, sheight = view_rect.width(), view_rect.height()
-    
+        
         if ratio < 3.0:
             width = int(ratio*self.defheight)
             height = self.defheight
@@ -607,7 +609,8 @@ class ImageViewer(QtGui.QGraphicsView):
         oversize_h = width/swidth
         requiredperc = self.requiredoverlap/100.0
 
-        if self.optimizeview and (oversize_h%1.0) < requiredperc:
+        if self.optimizeview and (oversize_h%1.0) < requiredperc \
+          and int(oversize_h) > 0:
             csize = int(oversize_h)*swidth, int(int(oversize_h)*swidth/ratio)
         
         if csize is not None:
@@ -694,6 +697,9 @@ class ImageViewer(QtGui.QGraphicsView):
         
     def closeEvent(self,e):
         self.save_settings()
+        if self.farch:
+            self.farch.close()
+            
         super(ImageViewer,self).closeEvent(e)
         
     def action_queued_image(self,pos,center=None):
@@ -703,7 +709,7 @@ class ImageViewer(QtGui.QGraphicsView):
         buffering &= set(range(len(self.imagelist)))
         loadcandidate = buffering-existing
         
-        if pos in self.workers and self.workers[pos].loaded:
+        if pos in self.workers and center is None:
             worker = self.workers.pop(pos)
             center = center or worker.center
             error = worker.error
@@ -719,7 +725,7 @@ class ImageViewer(QtGui.QGraphicsView):
             
         if toload is not None:
             self.workers[toload] = worker = WorkerThread(self,toload,center)
-            worker.finished.connect(self.action_queued_image)
+            worker.loaded.connect(self.action_queued_image)
             worker.start()
         
         if self.cur in self.workers and not error:
