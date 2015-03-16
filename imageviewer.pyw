@@ -8,6 +8,8 @@ import PySide
 sys.modules['PyQt4'] = PySide # HACK for ImageQt
  
 import zipfile,os,re,time
+import htmllib,formatter,urlparse
+from urllib2 import urlopen
 from PySide import QtCore, QtGui
 from StringIO import StringIO
 import PIL.Image as Image
@@ -68,6 +70,64 @@ class ArchiveIO(StringIO):
         else:
             StringIO.close(self)
 
+class WebIO(StringIO):
+    def __init__(self,url,data=None,timeout=None):
+        if timeout:
+            StringIO.__init__(self,urlopen(url,data,timeout).read())
+        else:
+            StringIO.__init__(self,urlopen(url,data).read())
+        
+    def __enter__(self):
+        return self
+    
+    def __exit__(self, type, value, traceback):
+        self.close()
+
+class WebImage(object):
+    def __init__(self,image_url,page_url,next_page=''):
+        self.image_url = image_url
+        self.page_url = page_url
+        self.next_page = next_page
+        dummy, self.filename = os.path.split(self.image_url)
+        
+class ImageParser(htmllib.HTMLParser):
+    def __init__(self,url):
+        htmllib.HTMLParser.__init__(self,formatter.NullFormatter())
+        self.saved_link = None
+        self.candidate_img = []
+        
+        purl = list(urlparse.urlparse(url)[:3])
+        purl[2] = '/'.join(purl[2].split('/')[:-1])
+        self.base_url = '%s://%s%s/' % tuple(purl)
+        self.base_netloc = purl[1]
+        self.page_url = url
+        
+        with WebIO(url) as furl:
+            self.feed(furl.read())
+
+    def start_a(self,info=None):
+        elements = dict(info)
+        purl = urlparse.urlparse(elements['href'])
+        if purl.netloc == self.base_netloc:
+            self.saved_link = elements['href']
+        elif not purl.netloc:
+            self.saved_link = self.base_url+elements['href']
+        
+    def end_a(self):
+        self.saved_link = None
+        
+    def do_img(self,info):
+        elements = dict(info)
+        if self.saved_link:
+            self.candidate_img.append((elements['src'],self.saved_link))        
+
+    def find_image(self):
+        if not self.candidate_img:
+            raise IOError('No Image found at "%s"' % self.page_url)
+            
+        image_url, next_page_url = self.candidate_img[0]
+        return WebImage(image_url,self.page_url,next_page_url)
+        
 class ArchiveWrapper(object):
     isnumber = re.compile(r'\d+')
     formats = {'.zip'}
@@ -105,12 +165,37 @@ class ArchiveWrapper(object):
             self.handle.close()
             
     def isdir(self):
-        return self.handle is None
-            
+        return self.handle is None and self.path
+        
+    def filter_file_extension(self,exts):
+        """
+        Return a filtered list of files.
+        
+        Parameters
+        ----------
+            exts : list or set containing the wanted file extensions.
+        
+        Returns
+        ---------
+            filelist : a list containing only filenames of the provided types.
+        """
+        filelist = []
+        for zi  in self.filelist:
+            name, ext = os.path.splitext(zi.filename)
+            if ext.lower() in Image.EXTENSION:
+                filelist.append(zi)
+                
+        return filelist
+                
     @staticmethod
     def folderlist(path,base='',recursive=True):
         filelist = []
-        for f in os.listdir(path):
+        try:
+            dirlist = os.listdir(path)
+        except:
+            dirlist = []
+            
+        for f in dirlist:
             fullpath = os.path.join(path,f)
             filename = os.path.join(base,f)
             if os.path.isfile(fullpath):
@@ -141,6 +226,49 @@ class ArchiveWrapper(object):
     def __exit__(self, type, value, traceback):
         self.close()    
 
+class WebWrapper(ArchiveWrapper):
+    def __init__(self,url):
+        self.path = ''
+        self.mode = 'r'
+        self.filtered_lists = []
+        
+        fileinfo = ImageParser(url).find_image()
+        self.filelist = [fileinfo]
+        if fileinfo.next_page:
+            try:
+                nextinfo = ImageParser(fileinfo.next_page).find_image()
+                self.filelist.append(nextinfo)
+            except IOError:
+                pass
+    
+    def filter_file_extension(self,exts):
+        filelist = super(WebWrapper,self).filter_file_extension(exts)
+        self.filtered_lists.append((exts,filelist))
+        return filelist
+        
+    def load_next(self):
+        lastinfo = self.filelist[-1]
+        if lastinfo.next_page:
+            try:
+                nextinfo = ImageParser(lastinfo.next_page).find_image()
+            except IOError:
+                nextinfo = None
+                
+            self.filelist.append(nextinfo)
+            for exts, filelist in self.filtered_lists:
+                name, ext = os.path.splitext(nextinfo.filename)
+                if ext.lower() in Image.EXTENSION:
+                    filelist.append(nextinfo)
+                
+    def open(self,fileinfo,mode):
+        if mode in {'a','w'} and self.mode[0] == 'r':
+            raise IOError('Child mode does not fit to mode of Archive')
+        
+        if fileinfo == self.filelist[-1]:
+            self.load_next()
+            
+        return WebIO(fileinfo.image_url)
+    
 def list_archives(folder,recursive=False):
     filelist = ArchiveWrapper.folderlist(folder,'',recursive)
     sorted(filelist,key=ArchiveWrapper.split_filename)
@@ -375,12 +503,11 @@ class ImageViewer(QtGui.QGraphicsView):
         """
         try:
             errormsg = ''
-            farch = ArchiveWrapper(path,'r')
-            imagelist = []
-            for zi  in farch.filelist:
-                name, ext = os.path.splitext(zi.filename)
-                if ext.lower() in Image.EXTENSION:
-                    imagelist.append(zi)
+            try:
+                farch = WebWrapper(path)
+            except IOError:
+                farch = ArchiveWrapper(path,'r')
+            imagelist = farch.filter_file_extension(Image.EXTENSION)
                     
             if imagelist:
                 self.farch = farch
@@ -495,8 +622,12 @@ class ImageViewer(QtGui.QGraphicsView):
         if event.mimeData().hasUrls():
             event.setDropAction(QtCore.Qt.CopyAction)
             event.accept()
-            archives = [str(url.toLocalFile()) for url in event.mimeData().urls()]
-            self.load_archive(archives[0])
+            url = event.mimeData().urls()[0]
+            path = str(url.toLocalFile())
+            if path:
+                self.load_archive(path)
+            else:
+                self.load_archive(url.toString())
 
     def mouseDoubleClickEvent(self,e):
         self.action_next()
