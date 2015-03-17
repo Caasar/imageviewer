@@ -360,13 +360,33 @@ class Settings(QtGui.QDialog):
         self.requiredoverlap = QtGui.QLineEdit(self)
 
         self.preload.setValidator(QtGui.QIntValidator())
-        self.buffernumber
+        self.buffernumber.setValidator(QtGui.QIntValidator())
         self.shorttimeout.setValidator(QtGui.QIntValidator())
         self.longtimeout.setValidator(QtGui.QIntValidator())
         self.defheight.setValidator(QtGui.QIntValidator())
         self.defwidth.setValidator(QtGui.QIntValidator())
         self.requiredoverlap.setValidator(QtGui.QIntValidator())
 
+        self.preload.setToolTip(self.tr("Defines how many images after the "\
+             "current one will be loaded in the background."))
+        self.buffernumber.setToolTip(self.tr("Defines how many images will be "\
+             "held in memory for a faster display.\nShould be larger than preload."))
+        self.shorttimeout.setToolTip(self.tr("Number of miliseconds the "\
+             "status display appears after a page change."))
+        self.longtimeout.setToolTip(self.tr("Number of miliseconds the status "\
+             "display appears after an archive is loaded or an error occurs."))
+        self.defheight.setToolTip(self.tr("The default height an image should "\
+             "be scaled to if the aspect ratio of width to height is smaller "\
+             "than 2.\nHas priority over the default width, set to 0 to deactivate."))
+        self.defwidth.setToolTip(self.tr("The default width an image should "\
+             "be scaled to if the aspect ratio of height to width is smaller "\
+             "than 2.\nThe default height has the priority, set to 0 to deactivate."))
+        self.optview.setToolTip(self.tr("If active the width will be adapted "\
+             "so it will be a multiple of the viewer width if it is already "\
+             "close to it."))
+        self.requiredoverlap.setToolTip(self.tr("Defines how close the width "\
+             "has to be to be optimized to the viewer width."))
+        
         self.cancelbuttom = QtGui.QPushButton(self.tr("Cancel"),self)
         self.cancelbuttom.clicked.connect(self.reject)
         self.okbuttom = QtGui.QPushButton(self.tr("OK"),self)
