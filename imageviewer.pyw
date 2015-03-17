@@ -8,7 +8,7 @@ import PySide
 sys.modules['PyQt4'] = PySide # HACK for ImageQt
  
 import zipfile,os,re,time
-import htmllib,formatter,urlparse
+import htmllib,formatter,urlparse,gzip
 from urllib2 import urlopen, Request
 from PySide import QtCore, QtGui
 from StringIO import StringIO
@@ -70,11 +70,22 @@ class ArchiveIO(StringIO):
             StringIO.close(self)
 
 class WebIO(StringIO):
-    def __init__(self,url,data=None,timeout=None):
-        if timeout:
-            StringIO.__init__(self,urlopen(url,data,timeout).read())
+    def __init__(self,url,data=None):
+        request = Request(url)
+        request.add_header('Accept-encoding', 'gzip')
+        if data:
+            request.add_data(data)
+            
+        response  = urlopen(request)
+        if response.headers.getheader('Content-Encoding',''):
+            zipped = StringIO(response.read())
+            with gzip.GzipFile(fileobj=zipped) as gzip_handle:
+                raw = gzip_handle.read()
         else:
-            StringIO.__init__(self,urlopen(url,data).read())
+            raw = response.read()
+        response.close()
+
+        StringIO.__init__(self,raw)
         
     def __enter__(self):
         return self
@@ -105,15 +116,19 @@ class ImageParser(htmllib.HTMLParser):
         self.page_url = url
         
         with WebIO(url) as furl:
-            self.feed(furl.read())
+            tmp = furl.read()
+            self.feed(tmp)
 
     def start_a(self,info=None):
         elements = dict(info)
-        purl = urlparse.urlparse(elements['href'])
-        if purl.netloc == self.base_netloc:
-            self.saved_link = elements['href']
-        elif not purl.netloc:
-            self.saved_link = self.base_url+elements['href']
+        try:
+            purl = urlparse.urlparse(elements['href'])
+            if purl.netloc == self.base_netloc:
+                self.saved_link = elements['href']
+            elif not purl.netloc:
+                self.saved_link = self.base_url+elements['href']
+        except KeyError:
+            pass
         
     def end_a(self):
         self.saved_link = None
@@ -244,6 +259,7 @@ class WebWrapper(ArchiveWrapper):
     def __init__(self,url):
         self.path = ''
         self.mode = 'r'
+        self.handle = None
         self.filtered_lists = []
         
         fileinfo = ImageParser(url).find_image()
