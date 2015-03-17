@@ -317,7 +317,7 @@ def list_archives(folder,recursive=False):
 class Settings(QtGui.QDialog):
     settings = {'defheight':1600,'shorttimeout':1000,'longtimeout':2000,
                 'optimizeview':True,'requiredoverlap':50,'preload':5,
-                'buffernumber':10}
+                'buffernumber':10,'defwidth':0}
                 
     def __init__(self,settings,parent=None):
         super(Settings,self).__init__(parent)
@@ -328,6 +328,7 @@ class Settings(QtGui.QDialog):
         self.preload = QtGui.QLineEdit(self)
         self.buffernumber = QtGui.QLineEdit(self)
         self.defheight = QtGui.QLineEdit(self)
+        self.defwidth = QtGui.QLineEdit(self)
         self.optview = QtGui.QCheckBox(self.tr("&Optimize Size"),self)
         self.shorttimeout = QtGui.QLineEdit(self)
         self.longtimeout = QtGui.QLineEdit(self)
@@ -338,6 +339,7 @@ class Settings(QtGui.QDialog):
         self.shorttimeout.setValidator(QtGui.QIntValidator())
         self.longtimeout.setValidator(QtGui.QIntValidator())
         self.defheight.setValidator(QtGui.QIntValidator())
+        self.defwidth.setValidator(QtGui.QIntValidator())
         self.requiredoverlap.setValidator(QtGui.QIntValidator())
 
         self.cancelbuttom = QtGui.QPushButton(self.tr("Cancel"),self)
@@ -347,7 +349,8 @@ class Settings(QtGui.QDialog):
 
         self.setTabOrder(self.shorttimeout,self.longtimeout)
         self.setTabOrder(self.longtimeout,self.defheight)
-        self.setTabOrder(self.defheight,self.optview)
+        self.setTabOrder(self.defheight,self.defwidth)
+        self.setTabOrder(self.defwidth,self.optview)
         self.setTabOrder(self.optview,self.okbuttom)
         self.setTabOrder(self.optview,self.requiredoverlap)
         self.setTabOrder(self.requiredoverlap,self.preload)
@@ -359,6 +362,7 @@ class Settings(QtGui.QDialog):
         layout.addRow(self.tr("&Short Timeout (ms):"),self.shorttimeout)
         layout.addRow(self.tr("&Long Timeout (ms):"),self.longtimeout)
         layout.addRow(self.tr("Defaut &Height (px):"),self.defheight)
+        layout.addRow(self.tr("Defaut &Width (px):"),self.defwidth)
         layout.addRow(self.optview)
         layout.addRow(self.tr("Required &Overlap (%):"),self.requiredoverlap)
         layout.addRow(self.tr("&Preload Number:"),self.preload)
@@ -370,6 +374,7 @@ class Settings(QtGui.QDialog):
         self.preload.setText(unicode(settings['preload']))
         self.buffernumber.setText(unicode(settings['buffernumber']))
         self.defheight.setText(unicode(settings['defheight']))
+        self.defwidth.setText(unicode(settings['defwidth']))
         self.shorttimeout.setText(unicode(settings['shorttimeout']))
         self.longtimeout.setText(unicode(settings['longtimeout']))
         self.requiredoverlap.setText(unicode(settings['requiredoverlap']))
@@ -381,6 +386,7 @@ class Settings(QtGui.QDialog):
         settings['preload'] = int(self.preload.text())
         settings['buffernumber'] = int(self.buffernumber.text())
         settings['defheight'] = int(self.defheight.text())
+        settings['defwidth'] = int(self.defwidth.text())
         settings['shorttimeout'] = int(self.shorttimeout.text())
         settings['longtimeout'] = int(self.longtimeout.text())
         settings['requiredoverlap'] = int(self.requiredoverlap.text())
@@ -468,6 +474,9 @@ class ImageViewer(QtGui.QGraphicsView):
         self.label.move(10,10)
         self.labeltimer = QtCore.QTimer(self)
         self.labeltimer.timeout.connect(self.hide_label)
+        
+        self.resizetimer = QtCore.QTimer(self)
+        self.resizetimer.timeout.connect(self.resize_view)
         
         self.pageselect = PageSelect(self)
         
@@ -628,9 +637,13 @@ class ImageViewer(QtGui.QGraphicsView):
         view_rect = self.viewport().rect()
         swidth, sheight = view_rect.width(), view_rect.height()
         
-        if ratio < 3.0:
+        if ratio < 2.0 and self.defheight:
             width = int(ratio*self.defheight)
             height = self.defheight
+            csize = width, height
+        if ratio > 0.5 and self.defwidth:
+            width = self.defwidth
+            height = int(self.defwidth/ratio)
             csize = width, height
             
         oversize_h = width/swidth
@@ -675,6 +688,13 @@ class ImageViewer(QtGui.QGraphicsView):
         self.actions['info'].setChecked(QtCore.Qt.Unchecked)
         self.label.hide()
         self.labeltimer.stop()
+        
+    def resize_view(self):
+        self.resizetimer.stop()
+        self.workers.clear()
+        self.buffer.clear()
+        if self.imagelist:
+            self.action_queued_image(self.cur,self._mv_start)
         
     def contextMenuEvent(self, event):
         menu = QtGui.QMenu(self)
@@ -724,6 +744,10 @@ class ImageViewer(QtGui.QGraphicsView):
     def mouseDoubleClickEvent(self,e):
         self.action_next()
         
+    def resizeEvent(self,e):
+        if e.oldSize().isValid():
+            self.resizetimer.start(100)
+        
     def closeEvent(self,e):
         self.save_settings()
         if self.farch:
@@ -747,7 +771,7 @@ class ImageViewer(QtGui.QGraphicsView):
             
         if pos not in self.workers and pos not in self.buffer:
             toload = pos
-        elif loadcandidate:
+        elif loadcandidate and not self.workers:
             toload = min(loadcandidate)
         else:
             toload = None
