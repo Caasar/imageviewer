@@ -841,6 +841,15 @@ class ImageViewer(QtGui.QGraphicsView):
         if dialog.exec_():
             for key, value in dialog.settings.iteritems():
                 setattr(self,key,value)
+                
+            if sdict['defheight'] != self.defheight or \
+               sdict['defwidth'] != self.defwidth or \
+               sdict['optimizeview'] != self.optimizeview or \
+               sdict['requiredoverlap'] != self.requiredoverlap:
+                self.buffer.clear()
+                self.workers.clear()
+                self.action_queued_image(self.cur,self._mv_start)
+                
         
     def action_page(self):
         self.pageselect.set_range(self.cur,self.imagelist)
