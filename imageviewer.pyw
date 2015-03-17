@@ -166,7 +166,10 @@ class ArchiveWrapper(object):
         self.mode = mode
         name, ext = os.path.splitext(path)
         if ext.lower() == '.zip':
-            self.handle = zipfile.ZipFile(path,mode)
+            try:
+                self.handle = zipfile.ZipFile(path,mode)
+            except zipfile.BadZipfile as err:
+                raise IOError(err.message)
             self.filelist = self.handle.filelist
         elif os.path.isdir(path):
             self.handle = None
@@ -511,6 +514,14 @@ class ImageViewer(QtGui.QGraphicsView):
                          checkable=True,
                          statusTip=self.tr("Show informaion about image"), 
                          triggered=self.action_info)
+        actions['first_image'] = QtGui.QAction(self.tr("First Image"), self,
+                         shortcut=QtGui.QKeySequence.MoveToStartOfLine,
+                         statusTip=self.tr("Show first image"), 
+                         triggered=self.action_first_image)
+        actions['last_image'] = QtGui.QAction(self.tr("Last Image"), self,
+                         shortcut=QtGui.QKeySequence.MoveToEndOfLine,
+                         statusTip=self.tr("Show last image"), 
+                         triggered=self.action_last_image)
         actions['next_image'] = QtGui.QAction(self.tr("Next Image"), self,
                          shortcut=QtGui.QKeySequence.MoveToNextPage,
                          statusTip=self.tr("Show next image"), 
@@ -673,6 +684,8 @@ class ImageViewer(QtGui.QGraphicsView):
         menu.addSeparator()
         menu.addAction(self.actions['page'])
         menu.addAction(self.actions['info'])
+        menu.addAction(self.actions['first_image'])
+        menu.addAction(self.actions['last_image'])
         menu.addAction(self.actions['prev_image'])
         menu.addAction(self.actions['next_image'])
         menu.addAction(self.actions['prev'])
@@ -860,6 +873,16 @@ class ImageViewer(QtGui.QGraphicsView):
             self.labeltimer.start(self.longtimeout)
             
         
+    def action_first_image(self):
+        if self.imagelist:
+            self.cur = 0
+            self.action_queued_image(self.cur,self._mv_start)
+
+    def action_last_image(self):
+        if self.imagelist:
+            self.cur = len(self.imagelist)-1
+            self.action_queued_image(self.cur,self._mv_start)
+            
     def action_next_image(self):
         if self.imagelist and (self.cur+1) < len(self.imagelist):
             self.cur += 1
