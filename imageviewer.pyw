@@ -663,7 +663,7 @@ class ImageViewer(QtGui.QGraphicsView):
             width = int(ratio*self.defheight)
             height = self.defheight
             csize = width, height
-        if ratio > 0.5 and self.defwidth:
+        elif ratio > 0.5 and self.defwidth:
             width = self.defwidth
             height = int(self.defwidth/ratio)
             csize = width, height
