@@ -791,10 +791,15 @@ class ImageViewer(QtGui.QGraphicsView):
             self.display_image(self.buffer[pos],center,error)
             
         if len(self.buffer) > self.buffernumber:
-            positions = sorted(self.buffer.iterkeys())
-            for pos in positions[:(len(self.buffer)-self.buffernumber)]:
+            # .25 makes sure images before the current one get removed first
+            # if they have the same distance to the image
+            key = lambda x: abs(self.cur-x+.25)
+            srtpos = sorted(self.buffer.iterkeys(),key=key)
+            for pos in srtpos[self.buffernumber:]:
+                print 'del', pos
                 del self.buffer[pos]
-        
+        print 'bufferlen', len(self.buffer), self.buffernumber
+    
     def action_open(self):
         archives = ' '.join('*%s' % ext for ext in ArchiveWrapper.formats)
         dialog = QtGui.QFileDialog(self)
