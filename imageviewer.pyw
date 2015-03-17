@@ -109,6 +109,8 @@ class WebImage(object):
         return hash(self.image_url)
         
 class ImageParser(htmllib.HTMLParser):
+    ignore = {'.gif'}
+    
     def __init__(self,url):
         htmllib.HTMLParser.__init__(self,formatter.NullFormatter())
         self.saved_link = None
@@ -141,7 +143,11 @@ class ImageParser(htmllib.HTMLParser):
         
     def do_img(self,info):
         elements = dict(info)
-        if self.saved_link:
+        src = elements['src']
+        name, ext = os.path.splitext(src)
+        if ext in self.ignore:
+            pass
+        elif self.saved_link:
             self.candidate_img.append((elements['src'],self.saved_link))        
         else:
             self.candidate_img2.append(elements['src'])
@@ -173,7 +179,9 @@ class ImageParser(htmllib.HTMLParser):
         request = Request(url)
         request.get_method = lambda: "HEAD"
         try:
-            length = urlopen(request).headers.getheader("content-length",0)
+            response = urlopen(request)
+            length = response.headers.getheader("content-length",0)
+            response.close()
         except HTTPError:
             length = 0
         except ValueError:
@@ -292,12 +300,6 @@ class WebWrapper(ArchiveWrapper):
         
         fileinfo = ImageParser(url).find_image()
         self.filelist = [fileinfo]
-        if fileinfo.next_page:
-            try:
-                nextinfo = ImageParser(fileinfo.next_page).find_image()
-                self.filelist.append(nextinfo)
-            except IOError:
-                pass
     
     def filter_file_extension(self,exts):
         filelist = super(WebWrapper,self).filter_file_extension(exts)
@@ -800,14 +802,18 @@ class ImageViewer(QtGui.QGraphicsView):
         if self.farch:
             self.farch.close()
             
+        if self.workers:
+            for worker in self.workers.itervalues():
+                worker.terminate()
+            
         super(ImageViewer,self).closeEvent(e)
         
     def action_queued_image(self,pos,center=None):
         error = ''
         existing = set(self.workers)|set(self.buffer)
-        buffering = set(range(self.cur+1,self.cur+self.preload+1))
-        buffering &= set(range(len(self.imagelist)))
-        loadcandidate = buffering-existing
+        preloading = set(range(self.cur+1,self.cur+self.preload+1))
+        preloading &= set(range(len(self.imagelist)))
+        loadcandidate = preloading-existing
         
         if pos in self.workers and center is None:
             worker = self.workers.pop(pos)
@@ -823,7 +829,7 @@ class ImageViewer(QtGui.QGraphicsView):
         else:
             toload = None
             
-        if toload is not None:
+        if toload is not None and toload < len(self.imagelist):
             self.workers[toload] = worker = WorkerThread(self,toload,center)
             worker.loaded.connect(self.action_queued_image)
             worker.start()
@@ -843,7 +849,7 @@ class ImageViewer(QtGui.QGraphicsView):
             # .25 makes sure images before the current one get removed first
             # if they have the same distance to the image
             key = lambda x: abs(self.cur-x+.25)
-            srtpos = sorted(self.buffer.iterkeys(),key=key)
+            srtpos = sorted(set(self.buffer)-preloading,key=key)
             for pos in srtpos[self.buffernumber:]:
                 del self.buffer[pos]
     
