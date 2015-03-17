@@ -796,9 +796,7 @@ class ImageViewer(QtGui.QGraphicsView):
             key = lambda x: abs(self.cur-x+.25)
             srtpos = sorted(self.buffer.iterkeys(),key=key)
             for pos in srtpos[self.buffernumber:]:
-                print 'del', pos
                 del self.buffer[pos]
-        print 'bufferlen', len(self.buffer), self.buffernumber
     
     def action_open(self):
         archives = ' '.join('*%s' % ext for ext in ArchiveWrapper.formats)
