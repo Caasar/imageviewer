@@ -9,7 +9,7 @@ sys.modules['PyQt4'] = PySide # HACK for ImageQt
  
 import zipfile,os,re,time
 import htmllib,formatter,urlparse,gzip
-from urllib2 import urlopen, Request
+from urllib2 import urlopen, Request, HTTPError
 from PySide import QtCore, QtGui
 from StringIO import StringIO
 import PIL.Image as Image
@@ -75,15 +75,18 @@ class WebIO(StringIO):
         request.add_header('Accept-encoding', 'gzip')
         if data:
             request.add_data(data)
-            
-        response  = urlopen(request)
-        if response.headers.getheader('Content-Encoding',''):
-            zipped = StringIO(response.read())
-            with gzip.GzipFile(fileobj=zipped) as gzip_handle:
-                raw = gzip_handle.read()
-        else:
-            raw = response.read()
-        response.close()
+        
+        try:
+            response  = urlopen(request)
+            if response.headers.getheader('Content-Encoding',''):
+                zipped = StringIO(response.read())
+                with gzip.GzipFile(fileobj=zipped) as gzip_handle:
+                    raw = gzip_handle.read()
+            else:
+                raw = response.read()
+            response.close()
+        except HTTPError as err:
+            raise IOError(err.message)
 
         StringIO.__init__(self,raw)
         
@@ -108,6 +111,7 @@ class ImageParser(htmllib.HTMLParser):
         htmllib.HTMLParser.__init__(self,formatter.NullFormatter())
         self.saved_link = None
         self.candidate_img = []
+        self.candidate_img2 = []
         
         purl = list(urlparse.urlparse(url)[:3])
         purl[2] = '/'.join(purl[2].split('/')[:-1])
@@ -137,9 +141,12 @@ class ImageParser(htmllib.HTMLParser):
         elements = dict(info)
         if self.saved_link:
             self.candidate_img.append((elements['src'],self.saved_link))        
+        else:
+            self.candidate_img2.append(elements['src'])
+
 
     def find_image(self):
-        if not self.candidate_img:
+        if not self.candidate_img and not self.candidate_img2:
             raise IOError('No Image found at "%s"' % self.page_url)
             
         maxsize = -1
@@ -149,13 +156,28 @@ class ImageParser(htmllib.HTMLParser):
                 image_url, next_page = c_url, c_next
                 maxsize = c_size
                 
+        if maxsize < 0:
+            next_page = None
+            for c_url in self.candidate_img2:
+                c_size = int(ImageParser.get_content_length(c_url))
+                if maxsize < c_size:
+                    image_url = c_url
+                    maxsize = c_size
+                
         return WebImage(image_url,self.page_url,next_page)
         
     @staticmethod
     def get_content_length(url):
         request = Request(url)
         request.get_method = lambda: "HEAD"
-        return urlopen(request).headers["content-length"]
+        try:
+            length = urlopen(request).headers.getheader("content-length",0)
+        except HTTPError:
+            length = 0
+        except ValueError:
+            length = 0
+            
+        return length
 
 class ArchiveWrapper(object):
     isnumber = re.compile(r'\d+')
