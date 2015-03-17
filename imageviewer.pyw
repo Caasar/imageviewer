@@ -87,6 +87,8 @@ class WebIO(StringIO):
             response.close()
         except HTTPError as err:
             raise IOError(err.message)
+        except ValueError as err:
+            raise IOError(err.message)
 
         StringIO.__init__(self,raw)
         
@@ -262,6 +264,7 @@ class ArchiveWrapper(object):
                 filelist.extend(ArchiveWrapper.folderlist(fullpath,filename))
                 
         return filelist
+
         
     @staticmethod        
     def split_filename(fileinfo):
@@ -491,8 +494,10 @@ class ImageViewer(QtGui.QGraphicsView):
         self.setWindowIcon(APP_ICON)
         self.setFrameShape(self.NoFrame)
  
-        self.label = QtGui.QLabel(self.tr('Nothing to show\nOpen an image archive'),self)
+        self.label = QtGui.QLabel(self.tr('Nothing to show<br \>Open an image archive'),self)
         self.label.setStyleSheet("QLabel { background-color : black; color : white; padding: 5px 5px 5px 5px;border-radius: 5px; }")
+        self.label.setOpenExternalLinks(True)
+        self.label.setTextFormat(QtCore.Qt.RichText)
         self.label.move(10,10)
         self.labeltimer = QtCore.QTimer(self)
         self.labeltimer.timeout.connect(self.hide_label)
@@ -614,18 +619,18 @@ class ImageViewer(QtGui.QGraphicsView):
         """
         try:
             errormsg = ''
-            try:
+            if path.startswith('http'):
                 farch = WebWrapper(path)
-            except IOError:
+            else:
                 farch = ArchiveWrapper(path,'r')
             imagelist = farch.filter_file_extension(Image.EXTENSION)
                     
             if imagelist:
-                self.farch = farch
-                self.imagelist = imagelist
                 self.buffer = {}
                 self.workers = {}
                 self.cur = -1
+                self.farch = farch
+                self.imagelist = imagelist
                 scene = self.scene()
                 scene.clear()
                 scene.setSceneRect(0,0,10,10)
@@ -860,16 +865,18 @@ class ImageViewer(QtGui.QGraphicsView):
     def action_info(self):
         if self.label.isHidden() and self.imagelist:
             zi = self.imagelist[self.cur]
-            labelstr = '%d/%d\n%s' % (self.cur+1,len(self.imagelist),zi.filename)
-            if self.farch:
+            labelstr = '%d/%d<br \>%s' % (self.cur+1,len(self.imagelist),zi.filename)
+            if isinstance(self.farch,WebWrapper):
+                labelstr += '<br \><a href="%s">%s</a>' % (zi.page_url,zi.page_url)
+            else:
                 path, archname = os.path.split(self.farch.path)
-                labelstr += '\n%s' % archname
+                labelstr += '<br \>%s' % archname
                 
             self.label.setText(labelstr)
             self.label.resize(self.label.sizeHint())
             self.label.show()
             self.actions['info'].setChecked(QtCore.Qt.Checked)
-        else:
+        elif self.imagelist:
             self.actions['info'].setChecked(QtCore.Qt.Unchecked)
             self.label.hide()
         
