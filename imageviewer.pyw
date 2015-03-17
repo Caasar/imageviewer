@@ -798,7 +798,7 @@ class ImageViewer(QtGui.QGraphicsView):
             
         if pos not in self.workers and pos not in self.buffer:
             toload = pos
-        elif loadcandidate and not self.workers:
+        elif loadcandidate:
             toload = min(loadcandidate)
         else:
             toload = None
@@ -809,7 +809,9 @@ class ImageViewer(QtGui.QGraphicsView):
             worker.start()
         
         if self.cur in self.workers and not error:
-            text = self.tr('Loading "%s" ...') % self.imagelist[self.cur].filename
+            loading = ','.join(str(p+1) for p in sorted(self.workers))
+            params = self.cur+1, len(self.imagelist), loading
+            text = self.tr('%d/%d<br />Loading %s ...') % params
             self.label.setText(text)
             self.label.resize(self.label.sizeHint())
             self.label.show()
@@ -871,6 +873,10 @@ class ImageViewer(QtGui.QGraphicsView):
             else:
                 path, archname = os.path.split(self.farch.path)
                 labelstr += '<br \>%s' % archname
+                
+            if self.workers:
+                loading = ','.join(str(p+1) for p in sorted(self.workers))
+                labelstr += '<br \>' + self.tr('Loading %s') % loading
                 
             self.label.setText(labelstr)
             self.label.resize(self.label.sizeHint())
