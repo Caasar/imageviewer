@@ -10,6 +10,7 @@ sys.modules['PyQt4'] = PySide # HACK for ImageQt
 import zipfile,os,re,time
 import htmllib,formatter,urlparse,gzip
 from urllib2 import urlopen, Request, HTTPError
+from BaseHTTPServer import BaseHTTPRequestHandler
 from PySide import QtCore, QtGui
 from StringIO import StringIO
 import PIL.Image as Image
@@ -86,7 +87,12 @@ class WebIO(StringIO):
                 raw = response.read()
             response.close()
         except HTTPError as err:
-            raise IOError(err.message)
+            if not err.message:
+                dummy, msg = BaseHTTPRequestHandler.responses[err.code]
+                msg = '%d - %s' % (err.code, msg)
+                raise IOError(msg)
+            else:
+                raise IOError(err.message)
         except ValueError as err:
             raise IOError(err.message)
 
@@ -109,14 +115,19 @@ class WebImage(object):
         return hash(self.image_url)
         
 class ImageParser(htmllib.HTMLParser):
-    ignore = {'.gif'}
+    filtered = {'.gif'}
+    minlength = 50000
     
     def __init__(self,url):
         htmllib.HTMLParser.__init__(self,formatter.NullFormatter())
         self.saved_link = None
-        self.candidate_img = []
-        self.candidate_img2 = []
-        
+        self.imgs_priority1 = []
+        self.imgs_priority2 = []
+        self.imgs_priority3 = []
+        self.imgs_priority4 = []
+        self.imgs_lists = [self.imgs_priority1,self.imgs_priority2,
+                           self.imgs_priority3,self.imgs_priority4]
+                           
         purl = list(urlparse.urlparse(url)[:3])
         purl[2] = '/'.join(purl[2].split('/')[:-1])
         self.base_url = '%s://%s%s/' % tuple(purl)
@@ -135,6 +146,9 @@ class ImageParser(htmllib.HTMLParser):
                 self.saved_link = elements['href']
             elif not purl.netloc:
                 self.saved_link = self.base_url+elements['href']
+                
+            if self.saved_link == self.page_url:
+                self.saved_link = None
         except KeyError:
             pass
         
@@ -144,34 +158,32 @@ class ImageParser(htmllib.HTMLParser):
     def do_img(self,info):
         elements = dict(info)
         src = elements['src']
+        purl = urlparse.urlparse(elements['src'])
+        if not purl.netloc:
+            src = self.base_url+src
+            
         name, ext = os.path.splitext(src)
-        if ext in self.ignore:
-            pass
-        elif self.saved_link:
-            self.candidate_img.append((elements['src'],self.saved_link))        
-        else:
-            self.candidate_img2.append(elements['src'])
-
+        filtered = ext in self.filtered
+        priority = (not self.saved_link)*2 + filtered
+        self.imgs_lists[priority].append((src,self.saved_link))
 
     def find_image(self):
-        if not self.candidate_img and not self.candidate_img2:
-            raise IOError('No Image found at "%s"' % self.page_url)
-            
-        maxsize = -1
-        for c_url, c_next in self.candidate_img:
-            c_size = int(ImageParser.get_content_length(c_url))
-            if maxsize < c_size:
-                image_url, next_page = c_url, c_next
-                maxsize = c_size
-                
-        if maxsize < 0:
-            next_page = None
-            for c_url in self.candidate_img2:
+        image_url = None
+        maxsize = self.minlength
+        
+        for img_list in self.imgs_lists:
+            for c_url, c_next in img_list:
                 c_size = int(ImageParser.get_content_length(c_url))
                 if maxsize < c_size:
-                    image_url = c_url
+                    image_url, next_page = c_url, c_next
                     maxsize = c_size
                 
+            if maxsize > self.minlength:
+                break
+            
+        if image_url is None:
+            raise IOError('No Image found at "%s"' % self.page_url)
+            
         return WebImage(image_url,self.page_url,next_page)
         
     @staticmethod
@@ -662,7 +674,7 @@ class ImageViewer(QtGui.QGraphicsView):
                 errormsg = self.tr('No images found in "%s"') % name
                 
         except IOError as err:
-            errormsg = err.message
+            errormsg = err.message or self.tr("Unkown Error")
         
         if errormsg:
             self.label.setText(errormsg)
@@ -674,11 +686,11 @@ class ImageViewer(QtGui.QGraphicsView):
             return True
     
     def prepare_image(self,fileinfo):
-        with self.farch.open(fileinfo,'rb') as fin:
-            try:
-                img = Image.open(fin).convert('RGB')
-            except IOError as err:
-                return None, err.message
+        try:
+            with self.farch.open(fileinfo,'rb') as fin:
+                    img = Image.open(fin).convert('RGB')
+        except IOError as err:
+            return None, err.message or 'Unkown Error'
         
         csize = None
         width, height = img.size
@@ -707,12 +719,12 @@ class ImageViewer(QtGui.QGraphicsView):
             
         return img, ''
         
-    def display_image(self, img, center=None, error=''):
+    def display_image(self, img, center=None):
         scene = self.scene()
         was_empty = len(scene.items())==0
         scene.clear()
         center = center or self._mv_start
-        if img:
+        if isinstance(img,Image.Image):
             w, h = img.size
             scene.setSceneRect(0,0,w,h)
             self.imgQ = ImageQt.ImageQt(img)  # we need to hold reference to imgQ, or it will crash
@@ -728,7 +740,7 @@ class ImageViewer(QtGui.QGraphicsView):
                 self.label.show()
                 self.labeltimer.start(self.shorttimeout)
         else:
-            text = "%d/%d\n%s" % (self.cur+1,len(self.imagelist),error)
+            text = "%d/%d<br />%s" % (self.cur+1,len(self.imagelist),img)
             self.label.setText(text)
             self.label.resize(self.label.sizeHint())
             scene.setSceneRect(0,0,10,10)
@@ -773,11 +785,16 @@ class ImageViewer(QtGui.QGraphicsView):
     def dragEnterEvent(self,e):
         if e.mimeData().hasUrls():
             e.accept()
+        else:
+            super(ImageViewer,self).dragEnterEvent(e)
+            
             
     def dragMoveEvent(self, e):
         if e.mimeData().hasUrls():
             e.setDropAction(QtCore.Qt.LinkAction)
             e.accept()
+        else:
+            super(ImageViewer,self).dragMoveEvent(e)
 
     def dropEvent(self, event):
         if event.mimeData().hasUrls():
@@ -789,6 +806,8 @@ class ImageViewer(QtGui.QGraphicsView):
                 self.load_archive(path)
             else:
                 self.load_archive(url.toString())
+        else:
+            super(ImageViewer,self).dropEvent(event)
 
     def mouseDoubleClickEvent(self,e):
         self.action_next()
@@ -796,6 +815,7 @@ class ImageViewer(QtGui.QGraphicsView):
     def resizeEvent(self,e):
         if e.oldSize().isValid():
             self.resizetimer.start(100)
+        super(ImageViewer,self).resizeEvent(e)
         
     def closeEvent(self,e):
         self.save_settings()
@@ -809,7 +829,6 @@ class ImageViewer(QtGui.QGraphicsView):
         super(ImageViewer,self).closeEvent(e)
         
     def action_queued_image(self,pos,center=None):
-        error = ''
         existing = set(self.workers)|set(self.buffer)
         preloading = set(range(self.cur+1,self.cur+self.preload+1))
         preloading &= set(range(len(self.imagelist)))
@@ -818,9 +837,10 @@ class ImageViewer(QtGui.QGraphicsView):
         if pos in self.workers and center is None:
             worker = self.workers.pop(pos)
             center = center or worker.center
-            error = worker.error
             if worker.img:
                 self.buffer[pos] = worker.img
+            else:
+                self.buffer[pos] = worker.error
             
         if pos not in self.workers and pos not in self.buffer:
             toload = pos
@@ -834,7 +854,7 @@ class ImageViewer(QtGui.QGraphicsView):
             worker.loaded.connect(self.action_queued_image)
             worker.start()
         
-        if self.cur in self.workers and not error:
+        if self.cur in self.workers:
             loading = ','.join(str(p+1) for p in sorted(self.workers))
             params = self.cur+1, len(self.imagelist), loading
             text = self.tr('%d/%d<br />Loading %s ...') % params
@@ -843,7 +863,7 @@ class ImageViewer(QtGui.QGraphicsView):
             self.label.show()
 
         if pos == self.cur and pos in self.buffer:
-            self.display_image(self.buffer[pos],center,error)
+            self.display_image(self.buffer[pos],center)
             
         if len(self.buffer) > self.buffernumber:
             # .25 makes sure images before the current one get removed first
