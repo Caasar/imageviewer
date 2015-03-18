@@ -125,8 +125,7 @@ class ImageParser(htmllib.HTMLParser):
         self.imgs_priority2 = []
         self.imgs_priority3 = []
         self.imgs_priority4 = []
-        self.imgs_lists = [self.imgs_priority1,self.imgs_priority2,
-                           self.imgs_priority3,self.imgs_priority4]
+        self.imgs_lists = [list() for dummy in range(8)]
                            
         purl = list(urlparse.urlparse(url)[:3])
         purl[2] = '/'.join(purl[2].split('/')[:-1])
@@ -162,14 +161,15 @@ class ImageParser(htmllib.HTMLParser):
         if not purl.netloc:
             src = self.base_url+src
             
-        name, ext = os.path.splitext(src)
-        filtered = ext in self.filtered
-        priority = (not self.saved_link)*2 + filtered
+        name, ext = os.path.splitext(purl.path)
+        filtered = ext.lower() in self.filtered
+        unkown_ext = ext.lower() not in Image.EXTENSION
+        priority = unkown_ext*4 + (not self.saved_link)*2 + filtered
         self.imgs_lists[priority].append((src,self.saved_link))
 
     def find_image(self):
         image_url = None
-        maxsize = self.minlength
+        maxsize = -1
         
         for img_list in self.imgs_lists:
             for c_url, c_next in img_list:
