@@ -356,7 +356,7 @@ class Settings(QtGui.QDialog):
     settings = {'defheight':1600,'shorttimeout':1000,'longtimeout':2000,
                 'optimizeview':1,'requiredoverlap':50,'preload':5,
                 'buffernumber':10,'defwidth':0,'bgcolor':None,
-                'saveposition':0}
+                'saveposition':0,'overlap':20}
                 
     def __init__(self,settings,parent=None):
         super(Settings,self).__init__(parent)
@@ -372,7 +372,7 @@ class Settings(QtGui.QDialog):
         self.shorttimeout = QtGui.QLineEdit(self)
         self.longtimeout = QtGui.QLineEdit(self)
         self.requiredoverlap = QtGui.QLineEdit(self)
-        self.bgcolor_btm = QtGui.QPushButton('',self)
+        self.overlap = QtGui.QLineEdit(self)
         self.saveposition = QtGui.QCheckBox(self.tr("S&ave Position"),self)
 
         self.preload.setValidator(QtGui.QIntValidator())
@@ -382,6 +382,7 @@ class Settings(QtGui.QDialog):
         self.defheight.setValidator(QtGui.QIntValidator())
         self.defwidth.setValidator(QtGui.QIntValidator())
         self.requiredoverlap.setValidator(QtGui.QIntValidator())
+        self.overlap.setValidator(QtGui.QIntValidator())
 
         self.preload.setToolTip(self.tr("Defines how many images after the "\
              "current one will be loaded in the background."))
@@ -402,6 +403,8 @@ class Settings(QtGui.QDialog):
              "close to it."))
         self.requiredoverlap.setToolTip(self.tr("Defines how close the width "\
              "has to be to be optimized to the viewer width."))
+        self.overlap.setToolTip(self.tr("Defines how mach of the old image "\
+             "part is visible after advancing to the next one."))
         self.saveposition.setToolTip(self.tr("Save the position in the archive"\
              " on exit and loads it at the next start"))
         
@@ -409,11 +412,13 @@ class Settings(QtGui.QDialog):
         self.cancelbuttom.clicked.connect(self.reject)
         self.okbuttom = QtGui.QPushButton(self.tr("OK"),self)
         self.okbuttom.clicked.connect(self.accept)
+        self.bgcolor_btm = QtGui.QPushButton('',self)
         self.bgcolor_btm.clicked.connect(self.select_color)
 
         self.setTabOrder(self.saveposition,self.defheight)
         self.setTabOrder(self.defheight,self.defwidth)
-        self.setTabOrder(self.defwidth,self.optview)
+        self.setTabOrder(self.defwidth,self.overlap)
+        self.setTabOrder(self.overlap,self.optview)
         self.setTabOrder(self.optview,self.requiredoverlap)
         self.setTabOrder(self.requiredoverlap,self.preload)
         self.setTabOrder(self.preload,self.buffernumber)
@@ -427,6 +432,7 @@ class Settings(QtGui.QDialog):
         layout.addRow(self.saveposition)
         layout.addRow(self.tr("Defaut &Height (px):"),self.defheight)
         layout.addRow(self.tr("Defaut &Width (px):"),self.defwidth)
+        layout.addRow(self.tr("&Movement Overlap (%):"),self.overlap)
         layout.addRow(self.optview)
         layout.addRow(self.tr("&Required Overlap (%):"),self.requiredoverlap)
         layout.addRow(self.tr("&Preload Number:"),self.preload)
@@ -444,6 +450,7 @@ class Settings(QtGui.QDialog):
         self.defwidth.setText(unicode(settings['defwidth']))
         self.shorttimeout.setText(unicode(settings['shorttimeout']))
         self.longtimeout.setText(unicode(settings['longtimeout']))
+        self.overlap.setText(unicode(settings['overlap']))
         self.requiredoverlap.setText(unicode(settings['requiredoverlap']))
         if settings['optimizeview']:
             self.optview.setCheckState(QtCore.Qt.Checked)
@@ -464,6 +471,7 @@ class Settings(QtGui.QDialog):
         settings['shorttimeout'] = int(self.shorttimeout.text())
         settings['longtimeout'] = int(self.longtimeout.text())
         settings['requiredoverlap'] = int(self.requiredoverlap.text())
+        settings['overlap'] = int(self.overlap.text())
         # convert bool to int so QSettings will not save it as a string
         settings['optimizeview'] = int(self.optview.isChecked())
         settings['saveposition'] = int(self.saveposition.isChecked())
@@ -745,6 +753,7 @@ class ImageViewer(QtGui.QGraphicsView):
         ratio = width/height
         view_rect = self.viewport().rect()
         swidth, sheight = view_rect.width(), view_rect.height()
+        move_h = int(swidth*(100-self.overlap)/100)
         
         if ratio < 2.0 and self.defheight:
             width = int(ratio*self.defheight)
@@ -755,12 +764,14 @@ class ImageViewer(QtGui.QGraphicsView):
             height = int(self.defwidth/ratio)
             csize = width, height
             
-        oversize_h = width/swidth
         requiredperc = self.requiredoverlap/100.0
 
-        if self.optimizeview and (oversize_h%1.0) < requiredperc \
-          and int(oversize_h) > 0:
-            csize = int(oversize_h)*swidth, int(int(oversize_h)*swidth/ratio)
+        if self.optimizeview and width > swidth:
+            diff = width-swidth
+            if (diff%move_h) < requiredperc*swidth:
+                width = int(swidth+int(diff/move_h)*move_h)
+                height = int(width/ratio)
+                csize = width, height
         
         if csize is not None:
             img = img.resize(csize,Image.ANTIALIAS)
@@ -948,6 +959,7 @@ class ImageViewer(QtGui.QGraphicsView):
                 
             if sdict['defheight'] != self.defheight or \
                sdict['defwidth'] != self.defwidth or \
+               sdict['overlap'] != self.overlap or \
                sdict['optimizeview'] != self.optimizeview or \
                sdict['requiredoverlap'] != self.requiredoverlap:
                 self.buffer.clear()
@@ -1074,135 +1086,85 @@ class ImageViewer(QtGui.QGraphicsView):
             self.labeltimer.start(self.longtimeout)
             
     def action_next(self):
-        if self._mv_next():
+        view_rect = self.viewport().rect()
+        view_rect = self.mapToScene(view_rect).boundingRect()
+        scene_rect = self.sceneRect()
+        move_h = int(view_rect.width()*(100-self.overlap)/100)
+        move_v = int(view_rect.height()*(100-self.overlap)/100)
+        
+        step = self._mv_next(scene_rect,view_rect,move_h,move_v)
+        if step:
+            self.centerOn(view_rect.center()+step)
+        else:
             self.action_next_image()
 
     def action_prev(self):
-        if self._mv_prev():
+        view_rect = self.viewport().rect()
+        view_rect = self.mapToScene(view_rect).boundingRect()
+        scene_rect = self.sceneRect()
+        move_h = int(view_rect.width()*(100-self.overlap)/100)
+        move_v = int(view_rect.height()*(100-self.overlap)/100)
+        step = self._mv_prev(scene_rect,view_rect,move_h,move_v)
+        if step:
+            self.centerOn(view_rect.center()+step)
+        else:
             self.action_prev_image()
             
-    def move_down_right(self):
-        view_rect = self.viewport().rect()
-        view_rect = self.mapToScene(view_rect).boundingRect()
-        scene_rect = self.sceneRect()
-        if scene_rect.bottom() > view_rect.bottom():
-            view_rect.moveTop(view_rect.bottom())
-            self.ensureVisible(view_rect,xmargin=0,ymargin=0)
-            return False
-        elif scene_rect.right() > view_rect.right():
-            view_rect.moveTo(view_rect.right(),0)
-            self.ensureVisible(view_rect,xmargin=0,ymargin=0)
-            return False
-        else:
-            return True
+    @staticmethod
+    def move_down_right(scene,view,dx,dy):
+        if scene.bottom() > view.bottom():
+            return QtCore.QPointF(0.0,dy)
+        elif scene.right() > view.right():
+            return QtCore.QPointF(dx,-INF_POINT)
 
-    def move_down_left(self):
-        view_rect = self.viewport().rect()
-        view_rect = self.mapToScene(view_rect).boundingRect()
-        scene_rect = self.sceneRect()
-        if scene_rect.bottom() > view_rect.bottom():
-            view_rect.moveTop(view_rect.bottom())
-            self.ensureVisible(view_rect,xmargin=0,ymargin=0)
-            return False
-        elif scene_rect.left() < view_rect.left():
-            view_rect.moveRight(view_rect.left())
-            view_rect.moveTop(0)
-            self.ensureVisible(view_rect,xmargin=0,ymargin=0)
-            return False
-        else:
-            return True
+    @staticmethod
+    def move_down_left(scene,view,dx,dy):
+        if scene.bottom() > view.bottom():
+            return QtCore.QPointF(0.0,dy)
+        elif scene.left() < view.left():
+            return QtCore.QPointF(-dx,-INF_POINT)
 
-    def move_right_down(self):
-        view_rect = self.viewport().rect()
-        view_rect = self.mapToScene(view_rect).boundingRect()
-        scene_rect = self.sceneRect()
-        if scene_rect.right() > view_rect.right():
-            view_rect.moveLeft(view_rect.right())
-            self.ensureVisible(view_rect,xmargin=0,ymargin=0)
-            return False
-        elif scene_rect.bottom() > view_rect.bottom():
-            view_rect.moveTo(0,view_rect.bottom())
-            self.ensureVisible(view_rect,xmargin=0,ymargin=0)
-            return False
-        else:
-            return True
+    @staticmethod
+    def move_right_down(scene,view,dx,dy):
+        if scene.right() > view.right():
+            return QtCore.QPointF(dx,0.0)
+        elif scene.bottom() > view.bottom():
+            return QtCore.QPointF(-INF_POINT,dy)
 
-    def move_left_down(self):
-        view_rect = self.viewport().rect()
-        view_rect = self.mapToScene(view_rect).boundingRect()
-        scene_rect = self.sceneRect()
-        if scene_rect.left() < view_rect.left():
-            view_rect.moveRight(view_rect.left())
-            self.ensureVisible(view_rect,xmargin=0,ymargin=0)
-            return False
-        elif scene_rect.bottom() > view_rect.bottom():
-            view_rect.moveTo(INF_POINT,view_rect.bottom())
-            self.ensureVisible(view_rect,xmargin=0,ymargin=0)
-            return False
-        else:
-            return True
+    @staticmethod
+    def move_left_down(scene,view,dx,dy):
+        if scene.left() < view.left():
+            return QtCore.QPointF(-dx,0.0)
+        elif scene.bottom() > view.bottom():
+            return QtCore.QPointF(INF_POINT,dy)
 
-    def move_up_left(self):
-        view_rect = self.viewport().rect()
-        view_rect = self.mapToScene(view_rect).boundingRect()
-        scene_rect = self.sceneRect()
-        if scene_rect.top() < view_rect.top():
-            view_rect.moveBottom(view_rect.top())
-            self.ensureVisible(view_rect,xmargin=0,ymargin=0)
-            return False
-        elif scene_rect.left() < view_rect.left():
-            view_rect.moveBottom(scene_rect.bottom())
-            view_rect.moveRight(view_rect.left())
-            self.ensureVisible(view_rect,xmargin=0,ymargin=0)
-            return False
-        else:
-            return True
+    @staticmethod
+    def move_up_left(scene,view,dx,dy):
+        if scene.top() < view.top():
+            return QtCore.QPointF(0.0,-dy)
+        elif scene.left() < view.left():
+            return QtCore.QPointF(-dx,INF_POINT)
  
-    def move_up_right(self):
-        view_rect = self.viewport().rect()
-        view_rect = self.mapToScene(view_rect).boundingRect()
-        scene_rect = self.sceneRect()
-        if scene_rect.top() < view_rect.top():
-            view_rect.moveBottom(view_rect.top())
-            self.ensureVisible(view_rect,xmargin=0,ymargin=0)
-            return False
-        elif scene_rect.right() > view_rect.right():
-            view_rect.moveBottom(INF_POINT)
-            view_rect.moveLeft(view_rect.right())
-            self.ensureVisible(view_rect,xmargin=0,ymargin=0)
-            return False
-        else:
-            return True
+    @staticmethod
+    def move_up_right(scene,view,dx,dy):
+        if scene.top() < view.top():
+            return QtCore.QPointF(0.0,-dy)
+        elif scene.right() > view.right():
+            return QtCore.QPointF(dx,INF_POINT)
             
-    def move_left_up(self):
-        view_rect = self.viewport().rect()
-        view_rect = self.mapToScene(view_rect).boundingRect()
-        scene_rect = self.sceneRect()
-        if scene_rect.left() < view_rect.left():
-            view_rect.moveRight(view_rect.left())
-            self.ensureVisible(view_rect,xmargin=0,ymargin=0)
-        elif scene_rect.top() < view_rect.top():
-            view_rect.moveBottom(view_rect.top())
-            view_rect.moveRight(INF_POINT)
-            self.ensureVisible(view_rect,xmargin=0,ymargin=0)
-            return False
-        else:
-            return True
+    @staticmethod
+    def move_left_up(scene,view,dx,dy):
+        if scene.left() < view.left():
+            return QtCore.QPointF(-dx,0.0)
+        elif scene.top() < view.top():
+            return QtCore.QPointF(INF_POINT,-dy)
 
-    def move_right_up(self):
-        view_rect = self.viewport().rect()
-        view_rect = self.mapToScene(view_rect).boundingRect()
-        scene_rect = self.sceneRect()
-        if scene_rect.right() > view_rect.right():
-            view_rect.moveLeft(view_rect.right())
-            self.ensureVisible(view_rect,xmargin=0,ymargin=0)
-        elif scene_rect.top() < view_rect.top():
-            view_rect.moveBottom(view_rect.top())
-            view_rect.moveLeft(0)
-            self.ensureVisible(view_rect,xmargin=0,ymargin=0)
-            return False
-        else:
-            return True
+    @staticmethod
+    def move_right_up(scene,view,dx,dy):
+        if scene.right() > view.right():
+            return QtCore.QPointF(dx,0.0)
+        elif scene.top() < view.top():
+            return QtCore.QPointF(-INF_POINT,-dy)
 
     def save_settings(self):
         settings = QtCore.QSettings("Caasar", "Image Viewer")
