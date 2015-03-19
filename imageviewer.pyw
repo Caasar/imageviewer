@@ -106,10 +106,11 @@ class WebIO(StringIO):
 
 class WebImage(object):
     def __init__(self,image_url,page_url,next_page=''):
+        dummy, filename = os.path.split(image_url)
         self.image_url = image_url
         self.page_url = page_url
         self.next_page = next_page
-        dummy, self.filename = os.path.split(self.image_url)
+        self.filename = filename or image_url
         
     def __hash__(self):
         return hash(self.image_url)
@@ -124,14 +125,19 @@ class ImageParser(htmllib.HTMLParser):
         self.imgs_lists = [list() for dummy in range(8)]
                            
         purl = list(urlparse.urlparse(url)[:3])
-        purl[2] = '/'.join(purl[2].split('/')[:-1])
-        self.base_url = '%s://%s%s/' % tuple(purl)
+        purl[2] = '/'.join(p for p in purl[2].split('/')[:-1] if p)
+        if purl[2]:
+            self.base_url = '%s://%s/%s/' % tuple(purl)
+        else:
+            self.base_url = '%s://%s/' % (purl[0],purl[1])
         self.base_netloc = purl[1]
         self.page_url = url
         
         with WebIO(url) as furl:
-            tmp = furl.read()
-            self.feed(tmp)
+            try:
+                self.feed(furl.read())
+            except htmllib.HTMLParseError as err:
+                IOError(err.message)
 
     def start_a(self,info=None):
         elements = dict(info)
@@ -152,16 +158,17 @@ class ImageParser(htmllib.HTMLParser):
         
     def do_img(self,info):
         elements = dict(info)
-        src = elements['src']
-        purl = urlparse.urlparse(elements['src'])
-        if not purl.netloc:
-            src = self.base_url+src
-            
-        name, ext = os.path.splitext(purl.path)
-        filtered = ext.lower() in self.filtered
-        unknown_ext = ext.lower() not in Image.EXTENSION
-        priority = unknown_ext*4 + (not self.saved_link)*2 + filtered
-        self.imgs_lists[priority].append((src,self.saved_link))
+        if 'src' in elements:
+            src = elements['src']
+            purl = urlparse.urlparse(elements['src'])
+            if not purl.netloc:
+                src = self.base_url+src
+                
+            name, ext = os.path.splitext(purl.path)
+            filtered = ext.lower() in self.filtered
+            unknown_ext = ext.lower() not in Image.EXTENSION
+            priority = unknown_ext*4 + (not self.saved_link)*2 + filtered
+            self.imgs_lists[priority].append((src,self.saved_link))
 
     def find_image(self):
         image_url = None
@@ -347,8 +354,9 @@ def list_archives(folder,recursive=False):
 
 class Settings(QtGui.QDialog):
     settings = {'defheight':1600,'shorttimeout':1000,'longtimeout':2000,
-                'optimizeview':True,'requiredoverlap':50,'preload':5,
-                'buffernumber':10,'defwidth':0,'bgcolor':None}
+                'optimizeview':1,'requiredoverlap':50,'preload':5,
+                'buffernumber':10,'defwidth':0,'bgcolor':None,
+                'saveposition':0}
                 
     def __init__(self,settings,parent=None):
         super(Settings,self).__init__(parent)
@@ -365,6 +373,7 @@ class Settings(QtGui.QDialog):
         self.longtimeout = QtGui.QLineEdit(self)
         self.requiredoverlap = QtGui.QLineEdit(self)
         self.bgcolor_btm = QtGui.QPushButton('',self)
+        self.saveposition = QtGui.QCheckBox(self.tr("S&ave Position"),self)
 
         self.preload.setValidator(QtGui.QIntValidator())
         self.buffernumber.setValidator(QtGui.QIntValidator())
@@ -393,6 +402,8 @@ class Settings(QtGui.QDialog):
              "close to it."))
         self.requiredoverlap.setToolTip(self.tr("Defines how close the width "\
              "has to be to be optimized to the viewer width."))
+        self.saveposition.setToolTip(self.tr("Save the position in the archive"\
+             " on exit and loads it at the next start"))
         
         self.cancelbuttom = QtGui.QPushButton(self.tr("Cancel"),self)
         self.cancelbuttom.clicked.connect(self.reject)
@@ -400,27 +411,28 @@ class Settings(QtGui.QDialog):
         self.okbuttom.clicked.connect(self.accept)
         self.bgcolor_btm.clicked.connect(self.select_color)
 
-        self.setTabOrder(self.shorttimeout,self.longtimeout)
-        self.setTabOrder(self.longtimeout,self.defheight)
+        self.setTabOrder(self.saveposition,self.defheight)
         self.setTabOrder(self.defheight,self.defwidth)
         self.setTabOrder(self.defwidth,self.optview)
-        self.setTabOrder(self.optview,self.okbuttom)
         self.setTabOrder(self.optview,self.requiredoverlap)
         self.setTabOrder(self.requiredoverlap,self.preload)
         self.setTabOrder(self.preload,self.buffernumber)
-        self.setTabOrder(self.buffernumber,self.bgcolor_btm)
+        self.setTabOrder(self.buffernumber,self.shorttimeout)
+        self.setTabOrder(self.shorttimeout,self.longtimeout)
+        self.setTabOrder(self.longtimeout,self.bgcolor_btm)
         self.setTabOrder(self.bgcolor_btm,self.okbuttom)
         self.setTabOrder(self.okbuttom,self.cancelbuttom)
 
         layout = QtGui.QFormLayout()
-        layout.addRow(self.tr("&Short Timeout (ms):"),self.shorttimeout)
-        layout.addRow(self.tr("&Long Timeout (ms):"),self.longtimeout)
+        layout.addRow(self.saveposition)
         layout.addRow(self.tr("Defaut &Height (px):"),self.defheight)
         layout.addRow(self.tr("Defaut &Width (px):"),self.defwidth)
         layout.addRow(self.optview)
-        layout.addRow(self.tr("Required &Overlap (%):"),self.requiredoverlap)
+        layout.addRow(self.tr("&Required Overlap (%):"),self.requiredoverlap)
         layout.addRow(self.tr("&Preload Number:"),self.preload)
         layout.addRow(self.tr("&Buffer Number:"),self.buffernumber)
+        layout.addRow(self.tr("&Short Timeout (ms):"),self.shorttimeout)
+        layout.addRow(self.tr("&Long Timeout (ms):"),self.longtimeout)
         layout.addRow(self.tr("Background &Colorr:"),self.bgcolor_btm)
         layout.addRow(self.cancelbuttom,self.okbuttom)
 
@@ -433,8 +445,10 @@ class Settings(QtGui.QDialog):
         self.shorttimeout.setText(unicode(settings['shorttimeout']))
         self.longtimeout.setText(unicode(settings['longtimeout']))
         self.requiredoverlap.setText(unicode(settings['requiredoverlap']))
-        if settings['optimizeview'] and settings['optimizeview'] != 'false':
+        if settings['optimizeview']:
             self.optview.setCheckState(QtCore.Qt.Checked)
+        if settings['saveposition']:
+            self.saveposition.setCheckState(QtCore.Qt.Checked)
             
         self.bgcolor = settings['bgcolor']
         style = "QPushButton { background-color : rgb(%d,%d,%d)}" % self.bgcolor.getRgb()[:3]
@@ -450,7 +464,9 @@ class Settings(QtGui.QDialog):
         settings['shorttimeout'] = int(self.shorttimeout.text())
         settings['longtimeout'] = int(self.longtimeout.text())
         settings['requiredoverlap'] = int(self.requiredoverlap.text())
-        settings['optimizeview'] = self.optview.isChecked()
+        # convert bool to int so QSettings will not save it as a string
+        settings['optimizeview'] = int(self.optview.isChecked())
+        settings['saveposition'] = int(self.saveposition.isChecked())
         settings['bgcolor'] = self.bgcolor
         self.settings = settings
         super(Settings,self).accept()
@@ -466,6 +482,7 @@ class PageSelect(QtGui.QDialog):
         self.setWindowModality(QtCore.Qt.ApplicationModal)
         self.setWindowFlags(QtCore.Qt.Dialog|QtCore.Qt.FramelessWindowHint)
         self.resize(640, 80)
+        self.imagelist = []
         
         self.page = QtGui.QLineEdit(self)
         self.page.setMaximumWidth(50)
@@ -479,26 +496,45 @@ class PageSelect(QtGui.QDialog):
         self.slider.valueChanged.connect(self.set_value)
         self.okbuttom = QtGui.QPushButton(self.tr("OK"),self)
         self.okbuttom.clicked.connect(self.accept)
+        self.cancelbuttom = QtGui.QPushButton(self.tr("Cancel"),self)
+        self.cancelbuttom.clicked.connect(self.reject)
+
+        self.label = QtGui.QLabel(self)
 
         layout = QtGui.QHBoxLayout()
         layout.addWidget(self.slider)
         layout.addWidget(self.page)
-        layout.addWidget(self.okbuttom)
+        
+        mlayout = QtGui.QGridLayout()
+        mlayout.setVerticalSpacing(0)
+        mlayout.addLayout(layout,0,0)
+        mlayout.addWidget(self.okbuttom,0,1)
+        mlayout.addWidget(self.label,1,0)
+        mlayout.addWidget(self.cancelbuttom,1,1)
         
         self.setTabOrder(self.slider,self.page)
         self.setTabOrder(self.page,self.okbuttom)
+        self.setTabOrder(self.okbuttom,self.cancelbuttom)
         
-        self.setLayout(layout)
+        self.setLayout(mlayout)
         
     def set_range(self,cur,imagelist):
+        self.imagelist = imagelist
         self.slider.setMaximum(len(imagelist))
         self.set_value(cur+1)
         
     def set_value(self,value):
         try:
             value = int(value)
+            if value > len(self.imagelist):
+                value = len(self.imagelist)
             self.slider.setValue(value)
             self.page.setText(unicode(value))
+            
+            metric = QtGui.QFontMetrics(self.label.font())
+            text = self.imagelist[value-1].filename
+            elided = metric.elidedText(text,QtCore.Qt.ElideLeft, self.label.width())
+            self.label.setText(elided)
         except ValueError:
             pass
         
@@ -645,13 +681,15 @@ class ImageViewer(QtGui.QGraphicsView):
                 self.addAction(act)
         self.actions = actions
         
-    def load_archive(self,path):
+    def load_archive(self,path,page=0):
         """
         load the images in the archive given py path and show the first one.
         
         Parameters
         ----------
             path : the path to the archive to load
+            page : the page to open in the archive, default 0.
+            
         
         Returns
         ----------
@@ -669,13 +707,16 @@ class ImageViewer(QtGui.QGraphicsView):
             if imagelist:
                 self.buffer = {}
                 self.workers = {}
-                self.cur = -1
                 self.farch = farch
                 self.imagelist = imagelist
+                if page < len(imagelist):
+                    self.cur = page
+                else:
+                    self.cur = 0
                 scene = self.scene()
                 scene.clear()
                 scene.setSceneRect(0,0,10,10)
-                self.action_next_image()
+                self.action_queued_image(self.cur,self._mv_start)
             else:
                 path, name = os.path.split(path)
                 errormsg = self.tr('No images found in "%s"') % name
@@ -916,10 +957,11 @@ class ImageViewer(QtGui.QGraphicsView):
                 
         
     def action_page(self):
-        self.pageselect.set_range(self.cur,self.imagelist)
-        if self.pageselect.exec_():
-            self.cur = self.pageselect.value
-            self.action_queued_image(self.cur,self._mv_start)
+        if self.imagelist:
+            self.pageselect.set_range(self.cur,self.imagelist)
+            if self.pageselect.exec_():
+                self.cur = self.pageselect.value
+                self.action_queued_image(self.cur,self._mv_start)
         
     def action_info(self):
         if self.label.isHidden() and self.imagelist:
@@ -1174,7 +1216,17 @@ class ImageViewer(QtGui.QGraphicsView):
         settings.beginGroup("Settings")
         for key in Settings.settings:
             settings.setValue(key,getattr(self,key))
-        settings.endGroup()        
+        settings.endGroup()
+        if self.saveposition and self.imagelist:
+            settings.beginGroup("History")
+            if isinstance(self.farch,WebWrapper):
+                fileinfo = self.imagelist[self.cur]
+                settings.setValue("lastpath", fileinfo.page_url)
+                settings.setValue("lastpage", 0)
+            else:
+                settings.setValue("lastpath", self.farch.path)
+                settings.setValue("lastpage", self.cur)
+            settings.endGroup()
         
     def load_settings(self):
         settings = QtCore.QSettings("Caasar", "Image Viewer")
@@ -1186,10 +1238,7 @@ class ImageViewer(QtGui.QGraphicsView):
         settings.endGroup()        
         settings.beginGroup("Settings")
         for key,defvalue in Settings.settings.iteritems():
-            value = settings.value(key,defvalue)
-            if isinstance(value,str) and value == 'false':
-                value = False
-            setattr(self,key,value)
+            setattr(self,key,settings.value(key,defvalue))
         settings.endGroup()
         
         self.bgcolor = QtGui.QColor(self.bgcolor)
@@ -1200,6 +1249,13 @@ class ImageViewer(QtGui.QGraphicsView):
                 self.action_movement(key)
                 break
         
+        if self.saveposition:
+            settings.beginGroup("History")
+            path = settings.value("lastpath",'')
+            pos = settings.value("lastpage",0)
+            if path:
+                self.load_archive(path,pos)
+            
         if isFullscreen:
             self.actions['fullscreen'].setChecked(QtCore.Qt.Checked)
         return isFullscreen
