@@ -3,16 +3,25 @@
 from __future__ import division
 
 import sys
- 
-import PySide
-sys.modules['PyQt4'] = PySide # HACK for ImageQt
- 
-import zipfile,os,re,time
-import htmllib,formatter,urlparse,gzip
-from urllib2 import urlopen, Request, HTTPError
-from BaseHTTPServer import BaseHTTPRequestHandler
-from PySide import QtCore, QtGui
-from StringIO import StringIO
+
+try: 
+    import PySide
+    sys.modules['PyQt4'] = PySide # HACK for ImageQt
+    from PySide import QtCore, QtGui
+except ImportError:
+    from PyQt4 import QtCore, QtGui
+    QtCore.Signal = QtCore.pyqtSignal
+    
+import zipfile,os,re,time,gzip
+#import htmllib,formatter
+from io import BytesIO
+from six import text_type, itervalues, iteritems, next
+from six.moves.html_parser import HTMLParser, HTMLParseError
+from six.moves.urllib.request import urlopen, Request
+from six.moves.urllib.error import HTTPError
+from six.moves.BaseHTTPServer import BaseHTTPRequestHandler
+from six.moves.urllib.parse import urlparse, ParseResult
+#from six.moves import cStringIO as StringIO
 import PIL.Image as Image
 import PIL.ImageQt as ImageQt
 
@@ -30,7 +39,7 @@ def pull(*args):
     while iters:
         for cur in iters:
             try:
-                yield cur.next()
+                yield next(cur)
                 niters.append(cur)
             except StopIteration:
                 pass
@@ -38,7 +47,7 @@ def pull(*args):
         iters = niters
         niters = []
 
-class ArchiveIO(StringIO):
+class ArchiveIO(BytesIO):
     def __init__(self,fileinfo,mode,parent=None):
         if mode[0] == 'r':
             init = parent.handle.read(fileinfo)
@@ -50,7 +59,7 @@ class ArchiveIO(StringIO):
         else:
             init = ''
             
-        StringIO.__init__(self,init)
+        BytesIO.__init__(self,init)
         self._parent = parent
         self._mode = mode
         self._fileinfo = fileinfo
@@ -59,18 +68,16 @@ class ArchiveIO(StringIO):
         if self._mode[0] in {'a','w'} and self._parent.handle:
             self._parent.handle.writestr(self._fileinfo,self.getvalue())
             
-        StringIO.close(self)
+        BytesIO.close(self)
 
-    def __enter__(self):
-        return self
-    
     def __exit__(self, type, value, traceback):
-        if type is None:
-            self.close()
-        else:
-            StringIO.close(self)
+        if type is None and self._mode[0] in {'a','w'} and self._parent.handle:
+            self._parent.handle.writestr(self._fileinfo,self.getvalue())
+        BytesIO.__exit__(self, type, value, traceback)
 
-class WebIO(StringIO):
+class WebIO(BytesIO):
+    re_charset = re.compile(r'charset=([\w-]+)')
+    
     def __init__(self,url,data=None):
         request = Request(url)
         request.add_header('Accept-encoding', 'gzip')
@@ -79,13 +86,21 @@ class WebIO(StringIO):
         
         try:
             response  = urlopen(request)
-            if response.headers.getheader('Content-Encoding',''):
-                zipped = StringIO(response.read())
+            if response.headers.get('Content-Encoding',''):
+                zipped = BytesIO(response.read())
                 with gzip.GzipFile(fileobj=zipped) as gzip_handle:
                     raw = gzip_handle.read()
             else:
                 raw = response.read()
+
+            m = self.re_charset.search(response.headers.get('Content-Type',''))
+            if m:
+                self.charset = m.group(1)
+            else:
+                self.charset = 'utf8'
+                
             response.close()
+            
         except HTTPError as err:
             if not err.message:
                 dummy, msg = BaseHTTPRequestHandler.responses[err.code]
@@ -96,14 +111,8 @@ class WebIO(StringIO):
         except ValueError as err:
             raise IOError(err.message)
 
-        StringIO.__init__(self,raw)
+        BytesIO.__init__(self,raw)
         
-    def __enter__(self):
-        return self
-    
-    def __exit__(self, type, value, traceback):
-        self.close()
-
 class WebImage(object):
     def __init__(self,image_url,page_url,next_page=''):
         dummy, filename = os.path.split(image_url)
@@ -115,16 +124,16 @@ class WebImage(object):
     def __hash__(self):
         return hash(self.image_url)
         
-class ImageParser(htmllib.HTMLParser):
+class ImageParser(HTMLParser):
     filtered = {'.gif'}
     minlength = 50000
     
     def __init__(self,url):
-        htmllib.HTMLParser.__init__(self,formatter.NullFormatter())
+        HTMLParser.__init__(self)
         self.saved_link = None
         self.imgs_lists = [list() for dummy in range(8)]
                            
-        purl = list(urlparse.urlparse(url)[:3])
+        purl = list(urlparse(url)[:3])
         purl[2] = '/'.join(p for p in purl[2].split('/')[:-1] if p)
         if purl[2]:
             self.base_url = '%s://%s/%s/' % tuple(purl)
@@ -135,16 +144,30 @@ class ImageParser(htmllib.HTMLParser):
         
         with WebIO(url) as furl:
             try:
-                self.feed(furl.read())
-            except htmllib.HTMLParseError as err:
+                self.feed(furl.read().decode(furl.charset))
+            except HTMLParseError as err:
                 IOError(err.message)
+                
+    def handle_starttag(self,tag,attrs):
+        if tag == 'a':
+            self.start_a(attrs)
+        elif tag == 'img':
+            self.do_img(attrs)
 
+    def handle_endtag(self,tag):
+        if tag == 'a':
+            self.end_a()
+            
     def start_a(self,info=None):
         elements = dict(info)
         try:
-            purl = urlparse.urlparse(elements['href'])
+            purl = urlparse(elements['href'])
             if purl.netloc == self.base_netloc:
                 self.saved_link = elements['href']
+            elif not purl.netloc and not purl.path:
+                ourl = urlparse(self.page_url)
+                nurl = ParseResult(*(ourl[:3]+purl[3:]))
+                self.saved_link = nurl.geturl()
             elif not purl.netloc:
                 self.saved_link = self.base_url+elements['href']
                 
@@ -160,9 +183,9 @@ class ImageParser(htmllib.HTMLParser):
         elements = dict(info)
         if 'src' in elements:
             src = elements['src']
-            purl = urlparse.urlparse(elements['src'])
+            purl = urlparse(elements['src'])
             if not purl.netloc:
-                src = self.base_url+src
+                src = self.base_url+src.lstrip('/')
                 
             name, ext = os.path.splitext(purl.path)
             filtered = ext.lower() in self.filtered
@@ -195,7 +218,7 @@ class ImageParser(htmllib.HTMLParser):
         request.get_method = lambda: "HEAD"
         try:
             response = urlopen(request)
-            length = response.headers.getheader("content-length",0)
+            length = response.headers.get("content-length",0)
             response.close()
         except HTTPError:
             length = 0
@@ -444,14 +467,14 @@ class Settings(QtGui.QDialog):
 
         self.setLayout(layout)
         
-        self.preload.setText(unicode(settings['preload']))
-        self.buffernumber.setText(unicode(settings['buffernumber']))
-        self.defheight.setText(unicode(settings['defheight']))
-        self.defwidth.setText(unicode(settings['defwidth']))
-        self.shorttimeout.setText(unicode(settings['shorttimeout']))
-        self.longtimeout.setText(unicode(settings['longtimeout']))
-        self.overlap.setText(unicode(settings['overlap']))
-        self.requiredoverlap.setText(unicode(settings['requiredoverlap']))
+        self.preload.setText(text_type(settings['preload']))
+        self.buffernumber.setText(text_type(settings['buffernumber']))
+        self.defheight.setText(text_type(settings['defheight']))
+        self.defwidth.setText(text_type(settings['defwidth']))
+        self.shorttimeout.setText(text_type(settings['shorttimeout']))
+        self.longtimeout.setText(text_type(settings['longtimeout']))
+        self.overlap.setText(text_type(settings['overlap']))
+        self.requiredoverlap.setText(text_type(settings['requiredoverlap']))
         if settings['optimizeview']:
             self.optview.setCheckState(QtCore.Qt.Checked)
         if settings['saveposition']:
@@ -537,7 +560,7 @@ class PageSelect(QtGui.QDialog):
             if value > len(self.imagelist):
                 value = len(self.imagelist)
             self.slider.setValue(value)
-            self.page.setText(unicode(value))
+            self.page.setText(text_type(value))
             
             metric = QtGui.QFontMetrics(self.label.font())
             text = self.imagelist[value-1].filename
@@ -598,7 +621,7 @@ class ImageViewer(QtGui.QGraphicsView):
         self.setAcceptDrops(True)
         self.imagelist = []
         self.farch = None
-        for key,value in Settings.settings.iteritems():
+        for key,value in iteritems(Settings.settings):
             setattr(self,key,value)
                         
         actions = {}
@@ -684,7 +707,7 @@ class ImageViewer(QtGui.QGraphicsView):
         self.movement = movements
         self.action_movement(rd)
         
-        for act in actions.itervalues():
+        for act in itervalues(actions):
             if isinstance(act,QtGui.QAction):
                 self.addAction(act)
         self.actions = actions
@@ -780,7 +803,7 @@ class ImageViewer(QtGui.QGraphicsView):
         
     def display_image(self, img, center=None):
         scene = self.scene()
-        was_empty = len(scene.items())==0
+        was_empty = len(list(scene.items()))==0
         scene.clear()
         center = center or self._mv_start
         if isinstance(img,Image.Image):
@@ -860,7 +883,7 @@ class ImageViewer(QtGui.QGraphicsView):
             event.setDropAction(QtCore.Qt.CopyAction)
             event.accept()
             url = event.mimeData().urls()[0]
-            path = unicode(url.toLocalFile())
+            path = text_type(url.toLocalFile())
             if path:
                 self.load_archive(path)
             else:
@@ -882,7 +905,7 @@ class ImageViewer(QtGui.QGraphicsView):
             self.farch.close()
             
         if self.workers:
-            for worker in self.workers.itervalues():
+            for worker in itervalues(self.workers):
                 worker.terminate()
             
         super(ImageViewer,self).closeEvent(e)
@@ -951,7 +974,7 @@ class ImageViewer(QtGui.QGraphicsView):
 
         dialog = Settings(sdict,self)
         if dialog.exec_():
-            for key, value in dialog.settings.iteritems():
+            for key, value in iteritems(dialog.settings):
                 setattr(self,key,value)
                 
             if self.bgcolor != sdict['bgcolor']:
@@ -1199,14 +1222,14 @@ class ImageViewer(QtGui.QGraphicsView):
         movement = settings.value("movement", 'move_right_down')
         settings.endGroup()        
         settings.beginGroup("Settings")
-        for key,defvalue in Settings.settings.iteritems():
+        for key,defvalue in iteritems(Settings.settings):
             setattr(self,key,settings.value(key,defvalue))
         settings.endGroup()
         
         self.bgcolor = QtGui.QColor(self.bgcolor)
         self.scene().setBackgroundBrush(self.bgcolor)
         
-        for key,(s,e,n,p) in self.movement.iteritems():
+        for key,(s,e,n,p) in iteritems(self.movement):
             if n.__name__ == movement:
                 self.action_movement(key)
                 break
@@ -1222,6 +1245,7 @@ class ImageViewer(QtGui.QGraphicsView):
             self.actions['fullscreen'].setChecked(QtCore.Qt.Checked)
         return isFullscreen
     
+
 if __name__ == "__main__":
     app = QtGui.QApplication(sys.argv[:1])
     APP_ICON = QtGui.QIcon('res/image.png')
