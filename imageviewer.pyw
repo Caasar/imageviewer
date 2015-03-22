@@ -12,19 +12,25 @@ except ImportError:
     from PyQt4 import QtCore, QtGui
     QtCore.Signal = QtCore.pyqtSignal
     
-import zipfile,os,re,time,gzip
+import zipfile,os,re,time,gzip,cgi
 #import htmllib,formatter
 from io import BytesIO
 from six import text_type, itervalues, iteritems, next
 from six.moves.html_parser import HTMLParser, HTMLParseError
 from six.moves.urllib.request import urlopen, Request
-from six.moves.urllib.error import HTTPError
+from six.moves.urllib.error import HTTPError, URLError
 from six.moves.BaseHTTPServer import BaseHTTPRequestHandler
 from six.moves.urllib.parse import urlparse, ParseResult
 #from six.moves import cStringIO as StringIO
 import PIL.Image as Image
 import PIL.ImageQt as ImageQt
 
+try:
+    import rarfile
+    KNOWN_ARCHIVES = {'.zip','.rar'}
+except ImportError:
+    KNOWN_ARCHIVES = {'.zip'}
+    
 Image.init()
 
 INF_POINT = 100000
@@ -46,6 +52,10 @@ def pull(*args):
             
         iters = niters
         niters = []
+        
+        
+class ArchiveIOError(IOError):
+    pass
 
 class ArchiveIO(BytesIO):
     def __init__(self,fileinfo,mode,parent=None):
@@ -75,6 +85,9 @@ class ArchiveIO(BytesIO):
             self._parent.handle.writestr(self._fileinfo,self.getvalue())
         BytesIO.__exit__(self, type, value, traceback)
 
+class WebIOError(ArchiveIOError):
+    pass
+
 class WebIO(BytesIO):
     re_charset = re.compile(r'charset=([\w-]+)')
     
@@ -102,14 +115,16 @@ class WebIO(BytesIO):
             response.close()
             
         except HTTPError as err:
-            if not err.message:
+            if not str(err):
                 dummy, msg = BaseHTTPRequestHandler.responses[err.code]
                 msg = '%d - %s' % (err.code, msg)
-                raise IOError(msg)
+                raise WebIOError(msg)
             else:
-                raise IOError(err.message)
+                raise WebIOError(str(err))
+        except URLError as err:
+            raise WebIOError(str(err))
         except ValueError as err:
-            raise IOError(err.message)
+            raise WebIOError(str(err))
 
         BytesIO.__init__(self,raw)
         
@@ -146,7 +161,7 @@ class ImageParser(HTMLParser):
             try:
                 self.feed(furl.read().decode(furl.charset))
             except HTMLParseError as err:
-                IOError(err.message)
+                WebIOError(str(err))
                 
     def handle_starttag(self,tag,attrs):
         if tag == 'a':
@@ -208,7 +223,7 @@ class ImageParser(HTMLParser):
                 break
             
         if image_url is None:
-            raise IOError('No Image found at "%s"' % self.page_url)
+            raise WebIOError('No Image found at "%s"' % self.page_url)
             
         return WebImage(image_url,self.page_url,next_page)
         
@@ -229,7 +244,7 @@ class ImageParser(HTMLParser):
 
 class ArchiveWrapper(object):
     isnumber = re.compile(r'\d+')
-    formats = {'.zip'}
+    formats = KNOWN_ARCHIVES
     
     def __init__(self,path,mode):
         self.path = path
@@ -239,19 +254,31 @@ class ArchiveWrapper(object):
             try:
                 self.handle = zipfile.ZipFile(path,mode)
             except zipfile.BadZipfile as err:
-                raise IOError(err.message)
+                raise ArchiveIOError(str(err))
             self.filelist = self.handle.filelist
+        elif ext.lower() == '.rar' and '.rar' in self.formats:
+            try:
+                self.handle = rarfile.RarFile(path,mode)
+                self.filelist = self.handle.infolist()
+                if self.filelist:
+                    # test if unrar works, i.e. can find unrar in path
+                    with self.handle.open(self.filelist[0]):
+                        pass
+            except rarfile.BadRarFile as err:
+                raise ArchiveIOError(str(err))
+            except rarfile.RarCannotExec as err:
+                raise ArchiveIOError(str(err))
         elif os.path.isdir(path):
             self.handle = None
             self.filelist = self.folderlist(path)
         else:
-            raise IOError('"%s" is not a supported archive' % path)
+            raise ArchiveIOError('"%s" is not a supported archive' % path)
         
         self.filelist = sorted(self.filelist,key=ArchiveWrapper.split_filename)
     
     def open(self,fileinfo,mode):
         if mode in {'a','w'} and self.mode[0] == 'r':
-            raise IOError('Child mode does not fit to mode of Archive')
+            raise ArchiveIOError('Child mode does not fit to mode of Archive')
             
         if self.handle:
             return ArchiveIO(fileinfo,mode,self)
@@ -349,7 +376,7 @@ class WebWrapper(ArchiveWrapper):
         if lastinfo.next_page:
             try:
                 nextinfo = ImageParser(lastinfo.next_page).find_image()
-            except IOError:
+            except WebIOError:
                 nextinfo = None
                 
             if nextinfo is not None:
@@ -357,7 +384,7 @@ class WebWrapper(ArchiveWrapper):
                 
     def open(self,fileinfo,mode):
         if mode in {'a','w'} and self.mode[0] == 'r':
-            raise IOError('Child mode does not fit to mode of Archive')
+            raise WebIOError('Child mode does not fit to mode of Archive')
         
         if fileinfo == self.filelist[-1]:
             self.load_next()
@@ -426,7 +453,7 @@ class Settings(QtGui.QDialog):
              "close to it."))
         self.requiredoverlap.setToolTip(self.tr("Defines how close the width "\
              "has to be to be optimized to the viewer width."))
-        self.overlap.setToolTip(self.tr("Defines how mach of the old image "\
+        self.overlap.setToolTip(self.tr("Defines how much of the old image "\
              "part is visible after advancing to the next one."))
         self.saveposition.setToolTip(self.tr("Save the position in the archive"\
              " on exit and loads it at the next start"))
@@ -752,10 +779,11 @@ class ImageViewer(QtGui.QGraphicsView):
                 path, name = os.path.split(path)
                 errormsg = self.tr('No images found in "%s"') % name
                 
-        except IOError as err:
-            errormsg = err.message or self.tr("Unkown Error")
+        except ArchiveIOError as err:
+            errormsg = str(err) or self.tr("Unkown Error")
         
         if errormsg:
+            errormsg = cgi.escape(errormsg)
             self.label.setText(errormsg)
             self.label.resize(self.label.sizeHint())
             self.label.show()
@@ -768,8 +796,8 @@ class ImageViewer(QtGui.QGraphicsView):
         try:
             with self.farch.open(fileinfo,'rb') as fin:
                     img = Image.open(fin).convert('RGB')
-        except IOError as err:
-            return None, err.message or 'Unkown Error'
+        except ArchiveIOError as err:
+            return None, str(err) or 'Unkown Error'
         
         csize = None
         width, height = img.size
@@ -822,6 +850,7 @@ class ImageViewer(QtGui.QGraphicsView):
                 self.label.show()
                 self.labeltimer.start(self.shorttimeout)
         else:
+            img = cgi.escape(img)
             text = "%d/%d<br />%s" % (self.cur+1,len(self.imagelist),img)
             self.label.setText(text)
             self.label.resize(self.label.sizeHint())
@@ -1048,6 +1077,7 @@ class ImageViewer(QtGui.QGraphicsView):
                 errormsg = self.tr('No further archives in "%s"') % folder 
 
         if errormsg:
+            errormsg = cgi.escape(errormsg)
             self.label.setText(errormsg)
             self.label.resize(self.label.sizeHint())
             self.label.show()
@@ -1072,6 +1102,7 @@ class ImageViewer(QtGui.QGraphicsView):
                 errormsg = self.tr('No previous archives in "%s"') % folder
 
         if errormsg:
+            errormsg = cgi.escape(errormsg)
             self.label.setText(errormsg)
             self.label.resize(self.label.sizeHint())
             self.label.show()
