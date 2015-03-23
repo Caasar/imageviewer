@@ -805,6 +805,7 @@ class ImageViewer(QtGui.QGraphicsView):
         view_rect = self.viewport().rect()
         swidth, sheight = view_rect.width(), view_rect.height()
         move_h = int(swidth*(100-self.overlap)/100)
+        origsize = width, height
         
         if ratio < 2.0 and self.defheight:
             width = int(ratio*self.defheight)
@@ -827,6 +828,7 @@ class ImageViewer(QtGui.QGraphicsView):
         if csize is not None:
             img = img.resize(csize,Image.ANTIALIAS)
             
+        img.origsize = origsize
         return img, ''
         
     def display_image(self, img, center=None):
@@ -838,6 +840,7 @@ class ImageViewer(QtGui.QGraphicsView):
             w, h = img.size
             scene.setSceneRect(0,0,w,h)
             self.imgQ = ImageQt.ImageQt(img)  # we need to hold reference to imgQ, or it will crash
+            self.imgQ.origsize = img.origsize
             scene.addPixmap(QtGui.QPixmap.fromImage(self.imgQ))
             self.centerOn(center)
             if was_empty:
@@ -874,8 +877,8 @@ class ImageViewer(QtGui.QGraphicsView):
         menu.addAction(self.actions['prev_file'])
         menu.addAction(self.actions['next_file'])
         menu.addSeparator()
-        menu.addAction(self.actions['page'])
         menu.addAction(self.actions['info'])
+        menu.addAction(self.actions['page'])
         menu.addAction(self.actions['first_image'])
         menu.addAction(self.actions['last_image'])
         menu.addAction(self.actions['prev_image'])
@@ -1030,7 +1033,9 @@ class ImageViewer(QtGui.QGraphicsView):
     def action_info(self):
         if self.label.isHidden() and self.imagelist:
             zi = self.imagelist[self.cur]
-            labelstr = '%d/%d<br \>%s' % (self.cur+1,len(self.imagelist),zi.filename)
+            labelstr = u'%d/%d' % (self.cur+1,len(self.imagelist))
+            labelstr += u'<br />%d \u2715 %d' % self.imgQ.origsize
+            labelstr += u'<br />%s' % zi.filename
             if isinstance(self.farch,WebWrapper):
                 labelstr += '<br \><a href="%s">%s</a>' % (zi.page_url,zi.page_url)
             else:
