@@ -14,8 +14,9 @@ except ImportError:
     
 import zipfile,os,re,time,gzip,cgi
 #import htmllib,formatter
+from ctypes import cdll,c_char_p
 from io import BytesIO
-from six import text_type, itervalues, iteritems, next
+from six import text_type, itervalues, iteritems, next, b
 from six.moves.html_parser import HTMLParser, HTMLParseError
 from six.moves.urllib.request import urlopen, Request
 from six.moves.urllib.error import HTTPError, URLError
@@ -25,11 +26,19 @@ from six.moves.urllib.parse import urlparse, ParseResult
 import PIL.Image as Image
 import PIL.ImageQt as ImageQt
 
+KNOWN_ARCHIVES = {'.zip'}
+
 try:
     import rarfile
-    KNOWN_ARCHIVES = {'.zip','.rar'}
+    KNOWN_ARCHIVES.add('.rar')
 except ImportError:
-    KNOWN_ARCHIVES = {'.zip'}
+    pass
+    
+try:
+    LIBMUPDF = cdll.libmupdf
+    KNOWN_ARCHIVES.add('.pdf')
+except:
+    pass
     
 Image.init()
 
@@ -128,6 +137,7 @@ class WebIO(BytesIO):
 
         BytesIO.__init__(self,raw)
         
+
 class WebImage(object):
     def __init__(self,image_url,page_url,next_page=''):
         dummy, filename = os.path.split(image_url)
@@ -358,6 +368,87 @@ class ArchiveWrapper(object):
     
     def __exit__(self, type, value, traceback):
         self.close()    
+
+class PdfIOError(ArchiveIOError):
+    pass
+
+class PdfImage(object):
+    def __init__(self,objid):
+        self.objid = objid
+        self.filename = text_type(objid)
+        
+    def __hash__(self):
+        return hash(self.objid)
+
+class PdfWrapper(ArchiveWrapper):
+    def __init__(self,path,minsize=5120,bufferlen=1048576):
+        self.path = path
+        self.minsize = minsize
+        self.mode = 'r'
+        self.handle = None
+        self.dll = LIBMUPDF
+        self.dll.pdf_to_name.restype = c_char_p
+        self.bufferlen = bufferlen
+        try:
+            self.context = self.dll.fz_new_context(None, None, 0)
+        except:
+            self.context = None
+
+        if not self.context:
+            raise PdfIOError('Could not build MuPDF context')
+
+        try:
+            self.doc = self.dll.pdf_open_document(self.context, path.encode())
+        except:
+            self.dll.fz_free_context(self.context)
+            self.context = None
+            self.doc = None
+
+        if not self.doc:
+            raise PdfIOError('Could not open "%s"' % path)
+            
+        cnt_obj = self.dll.pdf_count_objects(self.doc)
+        filelist = []
+        for cur in range(cnt_obj):
+            obj = self.dll.pdf_load_object(self.doc, cur, 0)
+            if self._isimage(obj):
+                filelist.append(PdfImage(cur))
+            self.dll.pdf_drop_obj(obj)
+                
+        self.filelist = filelist[::-1]
+        
+            
+    def filter_images(self):
+        return self.filelist
+
+    def close(self):
+        super(PdfWrapper,self).close()
+        self.dll.pdf_close_document(self.doc)
+        self.dll.fz_free_context(self.context)
+        
+    def open(self,fileinfo,mode):
+        if mode in {'a','w'} and self.mode[0] == 'r':
+            raise WebIOError('Child mode does not fit to mode of Archive')
+        
+        raw = ''
+        stream = self.dll.pdf_open_raw_stream(self.doc,fileinfo.objid,0)
+        buf = ' ' * self.bufferlen
+        read = self.dll.fz_read(stream,buf,self.bufferlen)
+        while read:
+            raw += buf[:read]
+            buf = ' ' * self.bufferlen
+            read = self.dll.fz_read(stream,buf,self.bufferlen)
+
+        return BytesIO(raw)
+
+    def _isimage(self,obj):
+        t = self.dll.pdf_dict_gets(obj, b"Subtype")
+        if self.dll.pdf_is_name(t) and self.dll.pdf_to_name(t)== b"Image":
+            t = self.dll.pdf_dict_gets(obj, b"Length")
+            return self.dll.pdf_is_int(t) and self.dll.pdf_to_int(t)>self.minsize
+        else:
+            return False
+        
 
 class WebWrapper(ArchiveWrapper):
     def __init__(self,url):
@@ -756,8 +847,11 @@ class ImageViewer(QtGui.QGraphicsView):
         """
         try:
             errormsg = ''
+            dummy, ext = os.path.splitext(path)
             if path.startswith('http'):
                 farch = WebWrapper(path)
+            elif ext.lower() == '.pdf' and '.pdf' in KNOWN_ARCHIVES:
+                farch = PdfWrapper(path)
             else:
                 farch = ArchiveWrapper(path,'r')
             imagelist = farch.filter_images()
@@ -796,7 +890,7 @@ class ImageViewer(QtGui.QGraphicsView):
         try:
             with self.farch.open(fileinfo,'rb') as fin:
                     img = Image.open(fin).convert('RGB')
-        except ArchiveIOError as err:
+        except IOError as err:
             return None, str(err) or 'Unkown Error'
         
         csize = None
