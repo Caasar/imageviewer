@@ -99,10 +99,12 @@ class WebIOError(ArchiveIOError):
 
 class WebIO(BytesIO):
     re_charset = re.compile(r'charset=([\w-]+)')
+    user_agent = 'Mozilla/5.0 (X11; U; Linux i686) Gecko/20071127 Firefox/2.0.0.11'
     
     def __init__(self,url,data=None):
         request = Request(url)
         request.add_header('Accept-encoding', 'gzip')
+        request.add_header('User-Agent',self.user_agent) 
         if data:
             request.add_data(data)
         
@@ -157,21 +159,20 @@ class ImageParser(HTMLParser):
         HTMLParser.__init__(self)
         self.saved_link = None
         self.imgs_lists = [list() for dummy in range(8)]
-                           
-        purl = list(urlparse(url)[:3])
-        purl[2] = '/'.join(p for p in purl[2].split('/')[:-1] if p)
-        if purl[2]:
-            self.base_url = '%s://%s/%s/' % tuple(purl)
-        else:
-            self.base_url = '%s://%s/' % (purl[0],purl[1])
-        self.base_netloc = purl[1]
+                 
         self.page_url = url
-        
+        self.page_purl = urlparse(url)
+        part = '/'.join(p for p in self.page_purl.path.split('/')[:-1] if p)
+        if part:
+            self.base_path = '/%s/' % part
+        else:
+            self.base_path = '/'
+            
         with WebIO(url) as furl:
             try:
                 self.feed(furl.read().decode(furl.charset))
             except HTMLParseError as err:
-                WebIOError(str(err))
+                WebIOError(text_type(err))
                 
     def handle_starttag(self,tag,attrs):
         if tag == 'a':
@@ -184,22 +185,17 @@ class ImageParser(HTMLParser):
             self.end_a()
             
     def start_a(self,info=None):
-        elements = dict(info)
         try:
-            purl = urlparse(elements['href'])
-            if purl.netloc == self.base_netloc:
-                self.saved_link = elements['href']
-            elif not purl.netloc and not purl.path:
-                ourl = urlparse(self.page_url)
-                nurl = ParseResult(*(ourl[:3]+purl[3:]))
-                self.saved_link = nurl.geturl()
-            elif not purl.netloc:
-                self.saved_link = self.base_url+elements['href']
+            elements = dict(info)
+            purl = self._fullpath(elements['href'])
+            if purl.netloc == self.page_purl.netloc:
+                self.saved_link = purl.geturl()
                 
-            if self.saved_link == self.page_url:
-                self.saved_link = None
         except KeyError:
             pass
+        
+        if self.saved_link == self.page_url:
+            self.saved_link = None
         
     def end_a(self):
         self.saved_link = None
@@ -207,11 +203,8 @@ class ImageParser(HTMLParser):
     def do_img(self,info):
         elements = dict(info)
         if 'src' in elements:
-            src = elements['src']
-            purl = urlparse(elements['src'])
-            if not purl.netloc:
-                src = self.base_url+src.lstrip('/')
-                
+            purl = self._fullpath(elements['src']) 
+            src = purl.geturl()
             name, ext = os.path.splitext(purl.path)
             filtered = ext.lower() in self.filtered
             unknown_ext = ext.lower() not in Image.EXTENSION
@@ -237,9 +230,22 @@ class ImageParser(HTMLParser):
             
         return WebImage(image_url,self.page_url,next_page)
         
+    def _fullpath(self,url):
+        purl = urlparse(url)
+        furl = list(purl)
+        if not purl.scheme:
+            furl[0] = self.page_purl.scheme
+        if not purl.netloc:
+            furl[1] = self.page_purl.netloc
+            if not purl.path or purl.path[0] != '/':
+                furl[2] = self.base_path + purl.path
+                
+        return ParseResult(*furl)
+        
     @staticmethod
     def get_content_length(url):
         request = Request(url)
+        request.add_header('User-Agent',WebIO.user_agent)
         request.get_method = lambda: "HEAD"
         try:
             response = urlopen(request)
@@ -264,7 +270,7 @@ class ArchiveWrapper(object):
             try:
                 self.handle = zipfile.ZipFile(path,mode)
             except zipfile.BadZipfile as err:
-                raise ArchiveIOError(str(err))
+                raise ArchiveIOError(text_type(err))
             self.filelist = self.handle.filelist
         elif ext.lower() == '.rar' and '.rar' in self.formats:
             try:
@@ -275,9 +281,9 @@ class ArchiveWrapper(object):
                     with self.handle.open(self.filelist[0]):
                         pass
             except rarfile.BadRarFile as err:
-                raise ArchiveIOError(str(err))
+                raise ArchiveIOError(text_type(err))
             except rarfile.RarCannotExec as err:
-                raise ArchiveIOError(str(err))
+                raise ArchiveIOError(text_type(err))
         elif os.path.isdir(path):
             self.handle = None
             self.filelist = self.folderlist(path)
@@ -874,7 +880,7 @@ class ImageViewer(QtGui.QGraphicsView):
                 errormsg = self.tr('No images found in "%s"') % name
                 
         except ArchiveIOError as err:
-            errormsg = str(err) or self.tr("Unkown Error")
+            errormsg = text_type(err) or self.tr("Unkown Error")
         
         if errormsg:
             errormsg = cgi.escape(errormsg)
@@ -891,7 +897,7 @@ class ImageViewer(QtGui.QGraphicsView):
             with self.farch.open(fileinfo,'rb') as fin:
                     img = Image.open(fin).convert('RGB')
         except IOError as err:
-            return None, str(err) or 'Unkown Error'
+            return None, text_type(err) or 'Unkown Error'
         
         csize = None
         width, height = img.size
@@ -1063,7 +1069,7 @@ class ImageViewer(QtGui.QGraphicsView):
             worker.start()
         
         if self.cur in self.workers:
-            loading = ','.join(str(p+1) for p in sorted(self.workers))
+            loading = ','.join(text_type(p+1) for p in sorted(self.workers))
             params = self.cur+1, len(self.imagelist), loading
             text = self.tr('%d/%d<br />Loading %s ...') % params
             self.label.setText(text)
@@ -1128,7 +1134,8 @@ class ImageViewer(QtGui.QGraphicsView):
         if self.label.isHidden() and self.imagelist:
             zi = self.imagelist[self.cur]
             labelstr = u'%d/%d' % (self.cur+1,len(self.imagelist))
-            labelstr += u'<br />%d \u2715 %d' % self.imgQ.origsize
+            if hasattr(self,'imgQ'):
+                labelstr += u'<br />%d \u2715 %d' % self.imgQ.origsize
             labelstr += u'<br />%s' % zi.filename
             if isinstance(self.farch,WebWrapper):
                 labelstr += '<br \><a href="%s">%s</a>' % (zi.page_url,zi.page_url)
@@ -1137,7 +1144,7 @@ class ImageViewer(QtGui.QGraphicsView):
                 labelstr += '<br \>%s' % archname
                 
             if self.workers:
-                loading = ','.join(str(p+1) for p in sorted(self.workers))
+                loading = ','.join(text_type(p+1) for p in sorted(self.workers))
                 labelstr += '<br \>' + self.tr('Loading %s') % loading
                 
             self.label.setText(labelstr)
