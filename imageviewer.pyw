@@ -26,11 +26,12 @@ from six.moves.urllib.parse import urlparse, ParseResult
 import PIL.Image as Image
 import PIL.ImageQt as ImageQt
 
-KNOWN_ARCHIVES = {'.zip'}
+KNOWN_ARCHIVES = {'.zip','.cbz'}
 
 try:
     import rarfile
     KNOWN_ARCHIVES.add('.rar')
+    KNOWN_ARCHIVES.add('.cbr')
 except ImportError:
     pass
     
@@ -266,13 +267,13 @@ class ArchiveWrapper(object):
         self.path = path
         self.mode = mode
         name, ext = os.path.splitext(path)
-        if ext.lower() == '.zip':
+        if ext.lower() in {'.zip','.cbz'}:
             try:
                 self.handle = zipfile.ZipFile(path,mode)
             except zipfile.BadZipfile as err:
                 raise ArchiveIOError(text_type(err))
             self.filelist = self.handle.filelist
-        elif ext.lower() == '.rar' and '.rar' in self.formats:
+        elif ext.lower() in {'.rar','.cbr'} and '.rar' in self.formats:
             try:
                 self.handle = rarfile.RarFile(path,mode)
                 self.filelist = self.handle.infolist()
@@ -714,6 +715,44 @@ class WorkerThread(QtCore.QThread):
         
     def removeParent(self):
         self.setParent(None)
+        
+class DroppingThread(QtCore.QThread):
+    loaded_archive = QtCore.Signal()
+    
+    def __init__(self,*args):
+        super(DroppingThread,self).__init__(*args)
+        self.path = None
+        self.farch = None
+        self.errmsg = ''
+
+    def set_path(self,path):
+        self.path = path
+        return self
+        
+    def pop_archive(self):
+        tpl = self.farch, self.errmsg
+        self.farch = None
+        self.errmsg = None
+        return tpl
+        
+    def run(self):
+        try:
+            path = self.path
+            errormsg = ''
+            dummy, ext = os.path.splitext(path)
+            if path.startswith('http'):
+                farch = WebWrapper(path)
+            elif ext.lower() == '.pdf' and '.pdf' in KNOWN_ARCHIVES:
+                farch = PdfWrapper(path)
+            else:
+                farch = ArchiveWrapper(path,'r')
+                
+        except ArchiveIOError as err:
+            farch = None
+            errormsg = text_type(err) or self.tr("Unkown Error")
+            
+        self.farch, self.errmsg = farch, errormsg
+        self.loaded_archive.emit()
 
 class ImageViewer(QtGui.QGraphicsView):
     def __init__(self,scene=None):
@@ -725,6 +764,9 @@ class ImageViewer(QtGui.QGraphicsView):
         self.setWindowIcon(APP_ICON)
         self.setFrameShape(self.NoFrame)
         scene.setBackgroundBrush(QtCore.Qt.black)
+        
+        self.dropping = DroppingThread(self)
+        self.dropping.loaded_archive.connect(self.load_dropped_archive)
  
         self.label = QtGui.QLabel(self.tr('Nothing to show<br \>Open an image archive'),self)
         self.label.setStyleSheet("QLabel { background-color : black; color : white; padding: 5px 5px 5px 5px;border-radius: 5px; }")
@@ -836,6 +878,10 @@ class ImageViewer(QtGui.QGraphicsView):
                 self.addAction(act)
         self.actions = actions
         
+    def load_dropped_archive(self):
+        farch, errmsg = self.dropping.pop_archive()
+        self.open_archive(farch,errmsg)
+            
     def load_archive(self,path,page=0):
         """
         load the images in the archive given py path and show the first one.
@@ -860,6 +906,14 @@ class ImageViewer(QtGui.QGraphicsView):
                 farch = PdfWrapper(path)
             else:
                 farch = ArchiveWrapper(path,'r')
+                
+        except ArchiveIOError as err:
+            errormsg = text_type(err) or self.tr("Unkown Error")
+            
+        return self.open_archive(farch,errormsg,page)
+            
+    def open_archive(self,farch,errormsg,page=0):
+        if farch:
             imagelist = farch.filter_images()
                     
             if imagelist:
@@ -876,12 +930,9 @@ class ImageViewer(QtGui.QGraphicsView):
                 scene.setSceneRect(0,0,10,10)
                 self.action_queued_image(self.cur,self._mv_start)
             else:
-                path, name = os.path.split(path)
+                path, name = os.path.split(farch.path)
                 errormsg = self.tr('No images found in "%s"') % name
                 
-        except ArchiveIOError as err:
-            errormsg = text_type(err) or self.tr("Unkown Error")
-        
         if errormsg:
             errormsg = cgi.escape(errormsg)
             self.label.setText(errormsg)
@@ -1002,7 +1053,6 @@ class ImageViewer(QtGui.QGraphicsView):
         else:
             super(ImageViewer,self).dragEnterEvent(e)
             
-            
     def dragMoveEvent(self, e):
         if e.mimeData().hasUrls():
             e.setDropAction(QtCore.Qt.LinkAction)
@@ -1015,11 +1065,14 @@ class ImageViewer(QtGui.QGraphicsView):
             event.setDropAction(QtCore.Qt.CopyAction)
             event.accept()
             url = event.mimeData().urls()[0]
-            path = text_type(url.toLocalFile())
-            if path:
-                self.load_archive(path)
-            else:
-                self.load_archive(url.toString())
+            path = text_type(url.toLocalFile() or url.toString())
+            self.dropping.set_path(path).start()
+            
+            labelstr = u'Loading "%s"' % path
+            self.label.setText(labelstr)
+            self.label.resize(self.label.sizeHint())
+            self.label.show()
+
         else:
             super(ImageViewer,self).dropEvent(event)
 
