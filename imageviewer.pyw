@@ -310,9 +310,6 @@ class ArchiveWrapper(object):
         if self.handle is not None:
             self.handle.close()
             
-    def isdir(self):
-        return self.handle is None and self.path
-        
     def filter_file_extension(self,exts):
         """
         Return a filtered list of files.
@@ -336,6 +333,33 @@ class ArchiveWrapper(object):
     def filter_images(self):
         return self.filter_file_extension(Image.EXTENSION)
 
+    def list_archives(self):
+        folder, name = os.path.split(self.path)
+        archlist = []
+        index = 0
+        if os.path.isdir(self.path):
+            dirlist = os.listdir(folder)
+            dirlist = sorted(dirlist,key=self.split_filename)
+            for f in dirlist:
+                fullpath = os.path.join(folder,f)
+                if os.path.isdir(fullpath):
+                    if f == name:
+                        index = len(archlist)
+                    archlist.append(fullpath)
+        else:
+            filelist = self.folderlist(folder,'',False)
+            filelist = sorted(filelist,key=self.split_filename)
+            for zi in filelist:
+                base, ext = os.path.splitext(zi.filename)
+                if ext.lower() in ArchiveWrapper.formats:
+                    if zi.filename == name:
+                        index = len(archlist)
+                    fullpath = os.path.join(folder,zi.filename)
+                    archlist.append(fullpath)
+                
+        print(index, archlist)
+        return archlist,index
+    
     @staticmethod
     def folderlist(path,base='',recursive=True):
         filelist = []
@@ -358,7 +382,6 @@ class ArchiveWrapper(object):
                 
         return filelist
 
-        
     @staticmethod        
     def split_filename(fileinfo):
         """
@@ -366,9 +389,13 @@ class ArchiveWrapper(object):
         for a simple alphanumber sorting.
         """
         isnumber = re.compile(r'\d+')
-        text = isnumber.split(fileinfo.filename)
-        numbers = isnumber.findall(fileinfo.filename)
-        return tuple(pull(text,(int(n) for n in numbers)))
+        if hasattr(fileinfo,'filename'):
+            filename = fileinfo.filename
+        else:
+            filename = text_type(fileinfo)
+        text = isnumber.split(filename)
+        numbers = isnumber.findall(filename)
+        return tuple(pull((t.lower() for t in text),(int(n) for n in numbers)))
         
     def __enter__(self):
         return self
@@ -459,7 +486,7 @@ class PdfWrapper(ArchiveWrapper):
 
 class WebWrapper(ArchiveWrapper):
     def __init__(self,url):
-        self.path = ''
+        self.path = url
         self.mode = 'r'
         self.handle = None
         
@@ -489,17 +516,6 @@ class WebWrapper(ArchiveWrapper):
             
         return WebIO(fileinfo.image_url)
     
-def list_archives(folder,recursive=False):
-    filelist = ArchiveWrapper.folderlist(folder,'',recursive)
-    filelist = sorted(filelist,key=ArchiveWrapper.split_filename)
-    archlist = []
-    for zi in filelist:
-        base, ext = os.path.splitext(zi.filename)
-        if ext.lower() in ArchiveWrapper.formats:
-            archlist.append(zi.filename)
-            
-    return archlist
-
 class Settings(QtGui.QDialog):
     settings = {'defheight':1600,'shorttimeout':1000,'longtimeout':2000,
                 'optimizeview':1,'requiredoverlap':50,'preload':5,
@@ -915,6 +931,7 @@ class ImageViewer(QtGui.QGraphicsView):
     def open_archive(self,farch,errormsg,page=0):
         if farch:
             imagelist = farch.filter_images()
+            path, name = os.path.split(farch.path)
                     
             if imagelist:
                 self.buffer = {}
@@ -928,9 +945,9 @@ class ImageViewer(QtGui.QGraphicsView):
                 scene = self.scene()
                 scene.clear()
                 scene.setSceneRect(0,0,10,10)
+                self.setWindowTitle('%s - %s' % (name, self.tr("Image Viewer")))
                 self.action_queued_image(self.cur,self._mv_start)
             else:
-                path, name = os.path.split(farch.path)
                 errormsg = self.tr('No images found in "%s"') % name
                 
         if errormsg:
@@ -1221,15 +1238,12 @@ class ImageViewer(QtGui.QGraphicsView):
     def action_next_file(self):
         errormsg = ''
         if self.farch:
+            archlist,loadindex = self.farch.list_archives()
             folder, name = os.path.split(self.farch.path)
-            archlist = list_archives(folder)
-            try:
-                loadindex = archlist.index(name)+1
-            except ValueError:
-                loadindex = 0
                 
+            loadindex += 1
             while loadindex < len(archlist) and \
-              not self.load_archive(os.path.join(folder,archlist[loadindex])):
+              not self.load_archive(archlist[loadindex]):
                 loadindex += 1  
                     
             if loadindex >= len(archlist):
@@ -1246,15 +1260,11 @@ class ImageViewer(QtGui.QGraphicsView):
     def action_prev_file(self):
         errormsg = ''
         if self.farch:
+            archlist,loadindex = self.farch.list_archives()
             folder, name = os.path.split(self.farch.path)
-            archlist = list_archives(folder)
-            try:
-                loadindex = archlist.index(name)-1
-            except ValueError:
-                loadindex = len(archlist)-1
                 
-            while loadindex >= 0 and \
-              not self.load_archive(os.path.join(folder,archlist[loadindex])):
+            loadindex -= 1
+            while loadindex >= 0 and not self.load_archive(archlist[loadindex]):
                 loadindex -= 1  
                     
             if loadindex < 0:
