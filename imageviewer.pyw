@@ -260,7 +260,6 @@ class ImageParser(HTMLParser):
         return length
 
 class ArchiveWrapper(object):
-    isnumber = re.compile(r'\d+')
     formats = KNOWN_ARCHIVES
     
     def __init__(self,path,mode):
@@ -357,7 +356,6 @@ class ArchiveWrapper(object):
                     fullpath = os.path.join(folder,zi.filename)
                     archlist.append(fullpath)
                 
-        print(index, archlist)
         return archlist,index
     
     @staticmethod
@@ -515,6 +513,9 @@ class WebWrapper(ArchiveWrapper):
             self.load_next()
             
         return WebIO(fileinfo.image_url)
+        
+    def list_archives(self):
+        return [], 0
     
 class Settings(QtGui.QDialog):
     settings = {'defheight':1600,'shorttimeout':1000,'longtimeout':2000,
@@ -562,11 +563,11 @@ class Settings(QtGui.QDialog):
         self.defwidth.setToolTip(self.tr("The default width an image should "\
              "be scaled to if the aspect ratio of height to width is smaller "\
              "than 2.\nThe default height has the priority, set to 0 to deactivate."))
-        self.optview.setToolTip(self.tr("If active the width will be adapted "\
-             "so it will be a multiple of the viewer width if it is already "\
-             "close to it."))
+        self.optview.setToolTip(self.tr("If active the width or height will "\
+             "be adapted so it will be a multiple of the viewer size if it "\
+             "is already close to it."))
         self.requiredoverlap.setToolTip(self.tr("Defines how close the width "\
-             "has to be to be optimized to the viewer width."))
+             "or height has to be to be optimized to the viewer."))
         self.overlap.setToolTip(self.tr("Defines how much of the old image "\
              "part is visible after advancing to the next one."))
         self.saveposition.setToolTip(self.tr("Save the position in the archive"\
@@ -803,6 +804,7 @@ class ImageViewer(QtGui.QGraphicsView):
         self.setAcceptDrops(True)
         self.imagelist = []
         self.farch = None
+        self.imgQ = None
         for key,value in iteritems(Settings.settings):
             setattr(self,key,value)
                         
@@ -973,6 +975,7 @@ class ImageViewer(QtGui.QGraphicsView):
         view_rect = self.viewport().rect()
         swidth, sheight = view_rect.width(), view_rect.height()
         move_h = int(swidth*(100-self.overlap)/100)
+        move_v = int(sheight*(100-self.overlap)/100)
         origsize = width, height
         
         if ratio < 2.0 and self.defheight:
@@ -986,11 +989,16 @@ class ImageViewer(QtGui.QGraphicsView):
             
         requiredperc = self.requiredoverlap/100.0
 
-        if self.optimizeview and width > swidth:
-            diff = width-swidth
-            if (diff%move_h) < requiredperc*swidth:
-                width = int(swidth+int(diff/move_h)*move_h)
+        if self.optimizeview:
+            wdiff = width-swidth
+            hdiff = height-sheight
+            if wdiff > 0 and (wdiff%move_h) < requiredperc*swidth:
+                width = int(swidth+int(wdiff/move_h)*move_h)
                 height = int(width/ratio)
+                csize = width, height
+            elif hdiff > 0 and (hdiff%move_v) < requiredperc*sheight:
+                height = int(sheight+int(hdiff/move_v)*move_v)
+                width  = int(height*ratio)
                 csize = width, height
         
         if csize is not None:
@@ -1023,8 +1031,10 @@ class ImageViewer(QtGui.QGraphicsView):
         else:
             img = cgi.escape(img)
             text = "%d/%d<br />%s" % (self.cur+1,len(self.imagelist),img)
+            self.imgQ = None
             self.label.setText(text)
             self.label.resize(self.label.sizeHint())
+            self.label.show()
             scene.setSceneRect(0,0,10,10)
         
     def hide_label(self):
@@ -1204,7 +1214,7 @@ class ImageViewer(QtGui.QGraphicsView):
         if self.label.isHidden() and self.imagelist:
             zi = self.imagelist[self.cur]
             labelstr = u'%d/%d' % (self.cur+1,len(self.imagelist))
-            if hasattr(self,'imgQ'):
+            if self.imgQ:
                 labelstr += u'<br />%d \u2715 %d' % self.imgQ.origsize
             labelstr += u'<br />%s' % zi.filename
             if isinstance(self.farch,WebWrapper):
