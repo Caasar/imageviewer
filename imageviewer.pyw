@@ -817,6 +817,10 @@ class ImageViewer(QtGui.QGraphicsView):
                         shortcut=QtGui.QKeySequence(QtCore.Qt.Key_S),
                         statusTip=self.tr("Open Settings"), 
                         triggered=self.action_settings)
+        actions['reload'] = QtGui.QAction(self.tr("Reload Archive"), self,
+                         shortcut=QtGui.QKeySequence.Refresh,
+                         statusTip=self.tr("Reload the current Archive"), 
+                         triggered=self.action_reload)
         actions['next_file'] = QtGui.QAction(self.tr("Next Archive"), self,
                          shortcut=QtGui.QKeySequence(QtCore.Qt.Key_L),
                          statusTip=self.tr("Load the next archive in the folder"), 
@@ -926,6 +930,7 @@ class ImageViewer(QtGui.QGraphicsView):
                 farch = ArchiveWrapper(path,'r')
                 
         except ArchiveIOError as err:
+            farch = None
             errormsg = text_type(err) or self.tr("Unkown Error")
             
         return self.open_archive(farch,errormsg,page)
@@ -1053,6 +1058,7 @@ class ImageViewer(QtGui.QGraphicsView):
         menu = QtGui.QMenu(self)
         menu.addAction(self.actions['open'])
         menu.addAction(self.actions['prev_file'])
+        menu.addAction(self.actions['reload'])
         menu.addAction(self.actions['next_file'])
         menu.addSeparator()
         menu.addAction(self.actions['info'])
@@ -1244,6 +1250,17 @@ class ImageViewer(QtGui.QGraphicsView):
             self.showNormal()
         else:
             self.showFullScreen()
+            
+    def action_reload(self):
+        if isinstance(self.farch,WebWrapper):
+            path = self.imagelist[self.cur].page_url
+            self.dropping.set_path(path).start()
+            labelstr = u'Loading "%s"' % path
+            self.label.setText(labelstr)
+            self.label.resize(self.label.sizeHint())
+            self.label.show()
+        elif self.farch:
+            self.load_archive(self.farch.path,self.cur)
 
     def action_next_file(self):
         errormsg = ''
