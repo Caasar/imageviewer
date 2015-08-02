@@ -941,8 +941,7 @@ class ImageViewer(QtGui.QGraphicsView):
             path, name = os.path.split(farch.path)
                     
             if imagelist:
-                self.buffer = {}
-                self.workers = {}
+                self.clearBuffers()
                 self.farch = farch
                 self.imagelist = imagelist
                 if page < len(imagelist):
@@ -970,47 +969,46 @@ class ImageViewer(QtGui.QGraphicsView):
     def prepare_image(self,fileinfo):
         try:
             with self.farch.open(fileinfo,'rb') as fin:
-                    img = Image.open(fin).convert('RGB')
+                img = Image.open(fin)
+                width, height = img.size
+                ratio = width/height
+                view_rect = self.viewport().rect()
+                swidth, sheight = view_rect.width(), view_rect.height()
+                move_h = int(swidth*(100-self.overlap)/100)
+                move_v = int(sheight*(100-self.overlap)/100)
+                origsize = width, height
+                
+                if ratio < 2.0 and self.defheight:
+                    width = int(ratio*self.defheight)
+                    height = self.defheight
+                elif ratio > 0.5 and self.defwidth:
+                    width = self.defwidth
+                    height = int(self.defwidth/ratio)
+                    
+                if self.optimizeview:
+                    requiredperc = self.requiredoverlap/100.0
+                    wdiff = width-swidth
+                    hdiff = height-sheight
+                    if wdiff > 0 and (wdiff%move_h) < requiredperc*swidth:
+                        width = int(swidth+int(wdiff/move_h)*move_h)
+                        height = int(width/ratio)
+                    elif hdiff > 0 and (hdiff%move_v) < requiredperc*sheight:
+                        height = int(sheight+int(hdiff/move_v)*move_v)
+                        width  = int(height*ratio)
+                
+                csize = width, height
+                if csize != origsize:
+                    img.thumbnail(csize,Image.ANTIALIAS)
+                
+                img = img.convert('RGB')
+                    
+            img.origsize = origsize
+            err_msg = ''
         except IOError as err:
-            return None, text_type(err) or 'Unkown Error'
-        
-        csize = None
-        width, height = img.size
-        ratio = width/height
-        view_rect = self.viewport().rect()
-        swidth, sheight = view_rect.width(), view_rect.height()
-        move_h = int(swidth*(100-self.overlap)/100)
-        move_v = int(sheight*(100-self.overlap)/100)
-        origsize = width, height
-        
-        if ratio < 2.0 and self.defheight:
-            width = int(ratio*self.defheight)
-            height = self.defheight
-            csize = width, height
-        elif ratio > 0.5 and self.defwidth:
-            width = self.defwidth
-            height = int(self.defwidth/ratio)
-            csize = width, height
+            img, err_msg = None, text_type(err) or 'Unkown Error'
             
-        requiredperc = self.requiredoverlap/100.0
-
-        if self.optimizeview:
-            wdiff = width-swidth
-            hdiff = height-sheight
-            if wdiff > 0 and (wdiff%move_h) < requiredperc*swidth:
-                width = int(swidth+int(wdiff/move_h)*move_h)
-                height = int(width/ratio)
-                csize = width, height
-            elif hdiff > 0 and (hdiff%move_v) < requiredperc*sheight:
-                height = int(sheight+int(hdiff/move_v)*move_v)
-                width  = int(height*ratio)
-                csize = width, height
-        
-        if csize is not None:
-            img = img.resize(csize,Image.ANTIALIAS)
+        return img, err_msg
             
-        img.origsize = origsize
-        return img, ''
         
     def display_image(self, img, center=None):
         scene = self.scene()
@@ -1049,8 +1047,7 @@ class ImageViewer(QtGui.QGraphicsView):
         
     def resize_view(self):
         self.resizetimer.stop()
-        self.workers.clear()
-        self.buffer.clear()
+        self.clearBuffers()
         if self.imagelist:
             self.action_queued_image(self.cur,self._mv_start)
         
@@ -1117,15 +1114,18 @@ class ImageViewer(QtGui.QGraphicsView):
             self.resizetimer.start(100)
         super(ImageViewer,self).resizeEvent(e)
         
+    def clearBuffers(self):
+        for worker in itervalues(self.workers):
+            worker.terminate()
+        self.workers.clear()
+        self.buffer.clear()
+        
     def closeEvent(self,e):
         self.save_settings()
         if self.farch:
             self.farch.close()
-            
-        if self.workers:
-            for worker in itervalues(self.workers):
-                worker.terminate()
-            
+        
+        self.clearBuffers()
         super(ImageViewer,self).closeEvent(e)
         
     def action_queued_image(self,pos,center=None):
@@ -1203,8 +1203,7 @@ class ImageViewer(QtGui.QGraphicsView):
                sdict['overlap'] != self.overlap or \
                sdict['optimizeview'] != self.optimizeview or \
                sdict['requiredoverlap'] != self.requiredoverlap:
-                self.buffer.clear()
-                self.workers.clear()
+                self.clearBuffers()
                 if self.imagelist:
                     self.action_queued_image(self.cur,self._mv_start)
                 
