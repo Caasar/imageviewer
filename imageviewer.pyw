@@ -171,7 +171,15 @@ class ImageParser(HTMLParser):
             
         with WebIO(url) as furl:
             try:
-                self.feed(furl.read().decode(furl.charset))
+                raw_bytes = furl.read()
+                try:
+                    content = raw_bytes.decode(furl.charset)
+                except UnicodeDecodeError:
+                    try:
+                        content = raw_bytes.decode('utf8')
+                    except UnicodeDecodeError:
+                        content = raw_bytes.decode('latin1')
+                self.feed(content)
             except HTMLParseError as err:
                 WebIOError(text_type(err))
                 
@@ -997,10 +1005,13 @@ class ImageViewer(QtGui.QGraphicsView):
                         width  = int(height*ratio)
                 
                 csize = width, height
-                if csize != origsize:
+                if csize == origsize:
+                    img = img.convert('RGB')
+                elif csize[0] > .5*origsize[0]:
+                    img = img.convert('RGB').resize(csize,Image.ANTIALIAS)
+                else:
                     img.thumbnail(csize,Image.ANTIALIAS)
-                
-                img = img.convert('RGB')
+                    img = img.convert('RGB')
                     
             img.origsize = origsize
             err_msg = ''
