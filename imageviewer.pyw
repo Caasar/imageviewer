@@ -175,6 +175,97 @@ class WebImage(object):
     def __hash__(self):
         return hash(self.image_url)
         
+
+class WebProfileSettings(QtGui.QDialog):
+    def __init__(self, *args):
+        super(WebProfileSettings,self).__init__(*args)
+        # setGeometry(x_pos, y_pos, width, height)
+        self.setWindowModality(QtCore.Qt.ApplicationModal)
+        self.setWindowFlags(QtCore.Qt.Dialog|QtCore.Qt.FramelessWindowHint)
+        #self.setGeometry(300, 200, 570, 450)
+        #self.setWindowTitle(self.tr("Parser"))
+        self.setFixedWidth(400)
+
+        profile = QtGui.QComboBox(self,editable=True)
+        page_url = QtGui.QLineEdit(self)
+        img_url = QtGui.QLineEdit(self)
+        next_url = QtGui.QLineEdit(self)
+
+        profile.activated.connect(self.load_profile)
+        profile.addItems(list(WebWrapper.profiles.keys()))
+        page_url.editingFinished.connect(self.update_profile)
+        img_url.editingFinished.connect(self.update_profile)
+        next_url.editingFinished.connect(self.update_profile)
+        
+        page_url.setToolTip(self.tr("A regular expresion."))
+        img_url.setToolTip(self.tr("CSS Selector for image element."))
+        next_url.setToolTip(self.tr("CSS Selector for next page link."))
+
+        cancel_btn = QtGui.QPushButton(self.tr("&Cancel"),self)
+        cancel_btn.clicked.connect(self.reject)
+        ok_btn = QtGui.QPushButton(self.tr("&OK"),self)
+        ok_btn.clicked.connect(self.accept)
+        
+        hbox = QtGui.QHBoxLayout()
+        hbox.addStretch()
+        hbox.addWidget(ok_btn)
+        hbox.addWidget(cancel_btn)
+
+        layout = QtGui.QFormLayout()
+        layout.addRow(self.tr("&Profile:"),profile)
+        layout.addRow(self.tr("&Url:"),page_url)
+        layout.addRow(self.tr("&Image filter:"),img_url)
+        layout.addRow(self.tr("&Next url filter:"),next_url)
+        
+        if 'bs4' not in sys.modules:
+            label = QtGui.QLabel(self.tr("Could not load BeautifulSoup4. Only defaut webparser available."))
+            label.setStyleSheet("QLabel { color : red; }")
+            profile.setDisabled(True)
+            page_url.setDisabled(True)
+            img_url.setDisabled(True)
+            next_url.setDisabled(True)
+            layout.addRow(label)
+        
+        layout.addRow(hbox)
+
+        self.setLayout(layout)
+        self.profile = profile
+        self.page_url = page_url
+        self.img_url = img_url
+        self.next_url = next_url
+        self.profiles = dict(WebWrapper.profiles)
+        self.load_profile(0)
+        
+        self.setTabOrder(profile,page_url)
+        self.setTabOrder(page_url,img_url)
+        self.setTabOrder(img_url,next_url)
+        self.setTabOrder(next_url,ok_btn)
+        self.setTabOrder(ok_btn,cancel_btn)
+
+    def load_profile(self,index):
+        profile = self.profile.currentText()
+        prof = self.profiles.get(profile,None)
+        if prof:
+            self.page_url.setText(prof['url']) 
+            self.img_url.setText(prof['img']) 
+            self.next_url.setText(prof['next']) 
+        
+    def update_profile(self):
+        profile = self.profile.currentText()
+        if profile:
+            prof = self.profiles.setdefault(profile, {})
+            prof['url'] = self.page_url.text()
+            prof['img'] = self.img_url.text()
+            prof['next'] = self.next_url.text()
+        
+    def accept(self):
+        for key, prof in self.profiles.items():
+            WebWrapper.profiles.pop(key, None)
+            if prof['url'] or prof['img'] or prof['next']:
+                WebWrapper.profiles[key] = prof
+        super(WebProfileSettings,self).accept()
+        
+
 class ImageParser(HTMLParser):
     filtered = {'.gif'}
     minlength = 50000
@@ -681,6 +772,11 @@ class Settings(QtGui.QDialog):
         self.setTabOrder(self.bgcolor_btm,self.okbuttom)
         self.setTabOrder(self.okbuttom,self.cancelbuttom)
 
+        hbox = QtGui.QHBoxLayout()
+        hbox.addStretch()
+        hbox.addWidget(self.okbuttom)
+        hbox.addWidget(self.cancelbuttom)
+
         layout = QtGui.QFormLayout()
         layout.addRow(self.saveposition)
         layout.addRow(self.tr("Defaut &Height (px):"),self.defheight)
@@ -693,7 +789,7 @@ class Settings(QtGui.QDialog):
         layout.addRow(self.tr("&Short Timeout (ms):"),self.shorttimeout)
         layout.addRow(self.tr("&Long Timeout (ms):"),self.longtimeout)
         layout.addRow(self.tr("Background &Colorr:"),self.bgcolor_btm)
-        layout.addRow(self.cancelbuttom,self.okbuttom)
+        layout.addRow(hbox)
 
         self.setLayout(layout)
         
@@ -905,6 +1001,10 @@ class ImageViewer(QtGui.QGraphicsView):
                         shortcut=QtGui.QKeySequence(QtCore.Qt.Key_S),
                         statusTip=self.tr("Open Settings"), 
                         triggered=self.action_settings)
+        actions['webparser'] = QtGui.QAction(self.tr("&Web Parser"), self,
+                        shortcut=QtGui.QKeySequence(QtCore.Qt.Key_W),
+                        statusTip=self.tr("Settings for web parser"), 
+                        triggered=self.action_web_profile)
         actions['reload'] = QtGui.QAction(self.tr("Reload Archive"), self,
                          shortcut=QtGui.QKeySequence.Refresh,
                          statusTip=self.tr("Reload the current Archive"), 
@@ -1164,6 +1264,7 @@ class ImageViewer(QtGui.QGraphicsView):
         menu.addAction(self.actions['fullscreen'])
         menu.addAction(self.actions['minimize'])
         menu.addSeparator()
+        menu.addAction(self.actions['webparser'])
         menu.addAction(self.actions['settings'])
         menu.addAction(self.actions['close'])
         menu.exec_(event.globalPos())
@@ -1275,6 +1376,10 @@ class ImageViewer(QtGui.QGraphicsView):
             dialog.setDirectory(path)
         if dialog.exec_():
             self.load_archive(dialog.selectedFiles()[0])
+            
+    def action_web_profile(self):
+        dialog = WebProfileSettings(self)
+        dialog.exec_()
 
     def action_settings(self):
         sdict = {}
