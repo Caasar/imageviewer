@@ -14,6 +14,7 @@ except ImportError:
     
 import zipfile,os,re,time,gzip,cgi
 #import htmllib,formatter
+from ast import literal_eval
 from ctypes import cdll,c_char_p
 from io import BytesIO
 from six import text_type, itervalues, iteritems, next, b
@@ -21,7 +22,7 @@ from six.moves.html_parser import HTMLParser, HTMLParseError
 from six.moves.urllib.request import urlopen, Request
 from six.moves.urllib.error import HTTPError, URLError
 from six.moves.BaseHTTPServer import BaseHTTPRequestHandler
-from six.moves.urllib.parse import urlparse, ParseResult
+from six.moves.urllib.parse import urlparse, ParseResult, urlunparse, quote
 #from six.moves import cStringIO as StringIO
 import PIL.Image as Image
 import PIL.ImageQt as ImageQt
@@ -40,7 +41,12 @@ try:
     KNOWN_ARCHIVES.add('.pdf')
 except:
     pass
-    
+
+try:
+    from bs4 import BeautifulSoup
+except ImportError:
+    pass
+
 Image.init()
 
 INF_POINT = 100000
@@ -102,7 +108,12 @@ class WebIO(BytesIO):
     re_charset = re.compile(r'charset=([\w-]+)')
     user_agent = 'Mozilla/5.0 (X11; U; Linux i686) Gecko/20071127 Firefox/2.0.0.11'
     
+    @staticmethod
+    def iriToUri(iri):
+        return urlunparse([quote(c) for c in urlparse(iri)])
+
     def __init__(self,url,data=None):
+        url = WebIO.iriToUri(url)
         request = Request(url)
         request.add_header('Accept-encoding', 'gzip')
         request.add_header('User-Agent',self.user_agent) 
@@ -139,7 +150,19 @@ class WebIO(BytesIO):
             raise WebIOError(str(err))
 
         BytesIO.__init__(self,raw)
-        
+    
+    def tostring(self):
+        raw_bytes = self.getvalue()
+        try:
+            content = raw_bytes.decode(self.charset)
+        except UnicodeDecodeError:
+            try:
+                content = raw_bytes.decode('utf8')
+            except UnicodeDecodeError:
+                content = raw_bytes.decode('latin1')
+                
+        return content
+
 
 class WebImage(object):
     def __init__(self,image_url,page_url,next_page=''):
@@ -491,12 +514,24 @@ class PdfWrapper(ArchiveWrapper):
         
 
 class WebWrapper(ArchiveWrapper):
+    profiles = dict()
+    profile_keys = ['url', 'img', 'next']
+    
     def __init__(self,url):
         self.path = url
         self.mode = 'r'
         self.handle = None
+        self.sel_img = None # '#comic-img > a > img'
+        self.sel_next = None # '#comic-img > a'
+        for paths in self.profiles.values():
+            if 'bs4' in sys.modules and re.match(paths['url'], url):
+                self.sel_img = paths['img']
+                self.sel_next = paths['next']
         
-        fileinfo = ImageParser(url).find_image()
+        if self.sel_img and self.sel_next:
+            fileinfo = self._parse_url(url)
+        else:
+            fileinfo = ImageParser(url).find_image()
         self.filelist = [fileinfo]
     
     def filter_images(self):
@@ -506,7 +541,10 @@ class WebWrapper(ArchiveWrapper):
         lastinfo = self.filelist[-1]
         if lastinfo.next_page:
             try:
-                nextinfo = ImageParser(lastinfo.next_page).find_image()
+                if self.sel_img and self.sel_next:
+                    nextinfo = self._parse_url(lastinfo.next_page)
+                else:
+                    nextinfo = ImageParser(lastinfo.next_page).find_image()
             except WebIOError:
                 nextinfo = None
                 
@@ -524,6 +562,48 @@ class WebWrapper(ArchiveWrapper):
         
     def list_archives(self):
         return [], 0
+        
+    def _parse_url(self, url):
+        with WebIO(url) as f_url:
+            html_doc = f_url.tostring()
+            
+        soup = BeautifulSoup(html_doc)
+        
+        nodes = soup.select(self.sel_next)
+        next_url = nodes[0]['href'] if nodes else ''
+        next_url = self._fullpath(next_url, url)
+
+        nodes = soup.select(self.sel_img)
+        image_url = nodes[0]['src'] if nodes else ''
+        image_url = self._fullpath(image_url, url)
+        
+        if not image_url:
+            raise WebIOError("Could not find image in '%s'" % url)
+        
+        return WebImage(image_url,url,next_url)
+
+    @staticmethod
+    def _fullpath(url, parent_url):
+        if not url:
+            return ''
+            
+        purl = urlparse(url)
+        parent_purl = urlparse(parent_url)
+        part = '/'.join(p for p in parent_purl.path.split('/')[:-1] if p)
+        if part:
+            parent_base = '/%s/' % part
+        else:
+            parent_base = '/'
+
+        furl = list(purl)
+        if not purl.scheme:
+            furl[0] = parent_purl.scheme
+        if not purl.netloc:
+            furl[1] = parent_purl.netloc
+            if not purl.path or purl.path[0] != '/':
+                furl[2] = parent_base + purl.path
+                
+        return ParseResult(*furl).geturl()
     
 class Settings(QtGui.QDialog):
     settings = {'defheight':1600,'shorttimeout':1000,'longtimeout':2000,
@@ -1439,6 +1519,12 @@ class ImageViewer(QtGui.QGraphicsView):
         for key in Settings.settings:
             settings.setValue(key,getattr(self,key))
         settings.endGroup()
+        settings.beginGroup("WebProfiles")
+        for key,val in WebWrapper.profiles.items():
+            values = repr(tuple(val[key] for key in WebWrapper.profile_keys))
+            settings.setValue(key,values)
+        settings.endGroup()        
+
         if self.saveposition and self.imagelist:
             settings.beginGroup("History")
             if isinstance(self.farch,WebWrapper):
@@ -1471,6 +1557,14 @@ class ImageViewer(QtGui.QGraphicsView):
                 self.action_movement(key)
                 break
         
+        settings.beginGroup("WebProfiles")
+        for profile in settings.childKeys():
+            values = literal_eval(settings.value(profile))
+            prof = dict(zip(WebWrapper.profile_keys, values))
+            if len(values) == len(WebWrapper.profile_keys):
+                WebWrapper.profiles[profile] = prof
+        settings.endGroup()        
+
         if self.saveposition:
             settings.beginGroup("History")
             path = settings.value("lastpath",'')
