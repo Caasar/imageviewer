@@ -110,7 +110,7 @@ class WebIO(BytesIO):
     
     @staticmethod
     def iriToUri(iri):
-        return urlunparse([quote(c) for c in urlparse(iri)])
+        return urlunparse([quote(c) if i < 3 else c for i, c in enumerate(urlparse(iri))])
 
     def __init__(self,url,data=None):
         url = WebIO.iriToUri(url)
