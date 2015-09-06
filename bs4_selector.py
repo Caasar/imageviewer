@@ -17,7 +17,7 @@ class Checker(object):
     classes = set()
 
 class CheckerTag(Checker):
-    re = re.compile(r'(?P<tag>[a-zA-Z_][-.a-zA-Z0-9_]*)'+SELECTOR_END)
+    re = re.compile(r'(?P<tag>[a-zA-Z_][a-zA-Z0-9_]*)'+SELECTOR_END)
     
     @classmethod
     def build(cls, selector, checker):
@@ -261,9 +261,9 @@ CHECKERS = [CheckerTag, CheckerAttrib, CheckerId, CheckerChildSlicer,
 def select(root, selector, debug=False):
     """Perform a CSS selection operation on the provided element."""
     selected = []
-    context = []
+    context = [root]
     selector = selector.strip()
-    while selector:
+    while selector and context:
         if selector[0] == '>':
             recursive = False
             selector = selector[1:].strip()
@@ -272,8 +272,6 @@ def select(root, selector, debug=False):
                 print('Recursive search')
             recursive = True
         
-        if not context:
-            context = [root]
         checker = []
         old_selected = None
         while old_selected != selector:
@@ -313,10 +311,11 @@ def select(root, selector, debug=False):
         selector = selector.strip()
         if selector and selector[0] == ',':
             selected.extend(context)
-            context = []
+            context = [root]
             selector = selector[1:].strip()
     
-    selected.extend(context)
+    if len(context) != 1 or id(context[0]) != id(root):
+        selected.extend(context)
     return selected
 
 __all__ = ['select', 'SelectorError']
