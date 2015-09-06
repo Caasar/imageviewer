@@ -1701,5 +1701,5 @@ if __name__ == "__main__":
     
     if len(sys.argv) > 1:
         view.load_archive(sys.argv[1])
-    #sys.exit(app.exec_())
+    sys.exit(app.exec_())
     
