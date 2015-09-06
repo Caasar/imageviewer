@@ -44,6 +44,7 @@ except:
 
 try:
     from bs4 import BeautifulSoup
+    from bs4_selector import select as bs4_select, SelectorError
 except ImportError:
     pass
 
@@ -660,11 +661,17 @@ class WebWrapper(ArchiveWrapper):
             
         soup = BeautifulSoup(html_doc)
         
-        nodes = soup.select(self.sel_next)
+        try:
+            nodes = bs4_select(soup, self.sel_next)
+        except SelectorError as err:
+            raise WebIOError('BeautifulSoup parse error: %s' % err.message)
         next_url = nodes[0]['href'] if nodes else ''
         next_url = self._fullpath(next_url, url)
 
-        nodes = soup.select(self.sel_img)
+        try:
+            nodes = bs4_select(soup, self.sel_img)
+        except SelectorError as err:
+            raise WebIOError('BeautifulSoup parse error: %s' % err.message)
         image_url = nodes[0]['src'] if nodes else ''
         image_url = self._fullpath(image_url, url)
         
@@ -1694,5 +1701,5 @@ if __name__ == "__main__":
     
     if len(sys.argv) > 1:
         view.load_archive(sys.argv[1])
-    sys.exit(app.exec_())
+    #sys.exit(app.exec_())
     
