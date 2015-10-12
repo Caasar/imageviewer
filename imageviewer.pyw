@@ -707,7 +707,8 @@ class Settings(QtGui.QDialog):
     settings = {'defheight':1600,'shorttimeout':1000,'longtimeout':2000,
                 'optimizeview':1,'requiredoverlap':50,'preload':5,
                 'buffernumber':10,'defwidth':0,'bgcolor':None,
-                'saveposition':0,'overlap':20}
+                'saveposition':0,'overlap':20, 'maxwidthratio':2.0,
+                'maxheightratio':2.0}
                 
     def __init__(self,settings,parent=None):
         super(Settings,self).__init__(parent)
@@ -719,6 +720,8 @@ class Settings(QtGui.QDialog):
         self.buffernumber = QtGui.QLineEdit(self)
         self.defheight = QtGui.QLineEdit(self)
         self.defwidth = QtGui.QLineEdit(self)
+        self.maxheightratio = QtGui.QLineEdit(self)
+        self.maxwidthratio = QtGui.QLineEdit(self)
         self.optview = QtGui.QCheckBox(self.tr("&Optimize Size"),self)
         self.shorttimeout = QtGui.QLineEdit(self)
         self.longtimeout = QtGui.QLineEdit(self)
@@ -732,6 +735,8 @@ class Settings(QtGui.QDialog):
         self.longtimeout.setValidator(QtGui.QIntValidator())
         self.defheight.setValidator(QtGui.QIntValidator())
         self.defwidth.setValidator(QtGui.QIntValidator())
+        self.maxheightratio.setValidator(QtGui.QDoubleValidator())
+        self.maxwidthratio.setValidator(QtGui.QDoubleValidator())
         self.requiredoverlap.setValidator(QtGui.QIntValidator())
         self.overlap.setValidator(QtGui.QIntValidator())
 
@@ -749,6 +754,10 @@ class Settings(QtGui.QDialog):
         self.defwidth.setToolTip(self.tr("The default width an image should "\
              "be scaled to if the aspect ratio of height to width is smaller "\
              "than 2.\nThe default height has the priority, set to 0 to deactivate."))
+        self.maxwidthratio.setToolTip(self.tr("The maximal height to width ratio "\
+             "for rescaling using the width."))
+        self.maxheightratio.setToolTip(self.tr("The maximal width to height ratio "\
+             "for rescaling using the height."))
         self.optview.setToolTip(self.tr("If active the width or height will "\
              "be adapted so it will be a multiple of the viewer size if it "\
              "is already close to it."))
@@ -768,7 +777,9 @@ class Settings(QtGui.QDialog):
 
         self.setTabOrder(self.saveposition,self.defheight)
         self.setTabOrder(self.defheight,self.defwidth)
-        self.setTabOrder(self.defwidth,self.overlap)
+        self.setTabOrder(self.defwidth,self.maxheightratio)
+        self.setTabOrder(self.maxheightratio,self.maxwidthratio)
+        self.setTabOrder(self.maxwidthratio,self.overlap)
         self.setTabOrder(self.overlap,self.optview)
         self.setTabOrder(self.optview,self.requiredoverlap)
         self.setTabOrder(self.requiredoverlap,self.preload)
@@ -788,6 +799,8 @@ class Settings(QtGui.QDialog):
         layout.addRow(self.saveposition)
         layout.addRow(self.tr("Defaut &Height (px):"),self.defheight)
         layout.addRow(self.tr("Defaut &Width (px):"),self.defwidth)
+        layout.addRow(self.tr("Max. H&eight Ratio:"),self.maxheightratio)
+        layout.addRow(self.tr("Max. W&idth Ratio:"),self.maxwidthratio)
         layout.addRow(self.tr("&Movement Overlap (%):"),self.overlap)
         layout.addRow(self.optview)
         layout.addRow(self.tr("&Required Overlap (%):"),self.requiredoverlap)
@@ -804,6 +817,8 @@ class Settings(QtGui.QDialog):
         self.buffernumber.setText(text_type(settings['buffernumber']))
         self.defheight.setText(text_type(settings['defheight']))
         self.defwidth.setText(text_type(settings['defwidth']))
+        self.maxheightratio.setText(text_type(settings['maxheightratio']))
+        self.maxwidthratio.setText(text_type(settings['maxwidthratio']))
         self.shorttimeout.setText(text_type(settings['shorttimeout']))
         self.longtimeout.setText(text_type(settings['longtimeout']))
         self.overlap.setText(text_type(settings['overlap']))
@@ -824,6 +839,8 @@ class Settings(QtGui.QDialog):
         settings['buffernumber'] = int(self.buffernumber.text())
         settings['defheight'] = int(self.defheight.text())
         settings['defwidth'] = int(self.defwidth.text())
+        settings['maxheightratio'] = float(self.maxheightratio.text())
+        settings['maxwidthratio'] = float(self.maxwidthratio.text())
         settings['shorttimeout'] = int(self.shorttimeout.text())
         settings['longtimeout'] = int(self.longtimeout.text())
         settings['requiredoverlap'] = int(self.requiredoverlap.text())
@@ -1173,10 +1190,10 @@ class ImageViewer(QtGui.QGraphicsView):
                 move_v = int(sheight*(100-self.overlap)/100)
                 origsize = width, height
                 
-                if ratio < 2.0 and self.defheight:
+                if ratio < self.maxheightratio and self.defheight:
                     width = int(ratio*self.defheight)
                     height = self.defheight
-                elif ratio > 0.5 and self.defwidth:
+                elif (ratio*self.maxwidthratio) > 1.0 and self.defwidth:
                     width = self.defwidth
                     height = int(self.defwidth/ratio)
                     
@@ -1658,7 +1675,10 @@ class ImageViewer(QtGui.QGraphicsView):
         settings.endGroup()        
         settings.beginGroup("Settings")
         for key,defvalue in iteritems(Settings.settings):
-            setattr(self,key,settings.value(key,defvalue))
+            value = settings.value(key, defvalue)
+            if defvalue is not None:
+                value = type(defvalue)(value)
+            setattr(self, key, value)
         settings.endGroup()
         
         self.bgcolor = QtGui.QColor(self.bgcolor)

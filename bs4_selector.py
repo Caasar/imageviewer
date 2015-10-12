@@ -7,6 +7,7 @@ Created on Sun Sep 06 09:06:13 2015
 from __future__ import print_function
 import re
 from bs4.element import Tag
+from six import string_types
 
 SELECTOR_END = r'[ ,>+~:#\[]?'
 
@@ -139,7 +140,7 @@ class CheckerClass(Checker):
     def __call__(self, tags):
         def has_class(tag):
             classes = tag.get('class',[])
-            if isinstance(classes, basestring):
+            if isinstance(classes, string_types):
                 classes = classes.split()
             return self.tag_class in classes
         return set(id(tag) for tag in tags if has_class(tag))
