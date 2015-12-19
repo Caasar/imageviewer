@@ -705,9 +705,8 @@ class WebWrapper(ArchiveWrapper):
     
 class Settings(QtGui.QDialog):
     settings = {'defheight':1600,'shorttimeout':1000,'longtimeout':2000,
-                'optimizeview':1,'requiredoverlap':50,'preload':5,
-                'buffernumber':10,'defwidth':0,'bgcolor':None,
-                'saveposition':0,'overlap':20, 'maxwidthratio':2.0,
+                'requiredoverlap':50,'preload':5,'buffernumber':10,'defwidth':0,
+                'bgcolor':None,'saveposition':0,'overlap':20,'maxwidthratio':2.0,
                 'maxheightratio':2.0}
                 
     def __init__(self,settings,parent=None):
@@ -722,7 +721,6 @@ class Settings(QtGui.QDialog):
         self.defwidth = QtGui.QLineEdit(self)
         self.maxheightratio = QtGui.QLineEdit(self)
         self.maxwidthratio = QtGui.QLineEdit(self)
-        self.optview = QtGui.QCheckBox(self.tr("&Optimize Size"),self)
         self.shorttimeout = QtGui.QLineEdit(self)
         self.longtimeout = QtGui.QLineEdit(self)
         self.requiredoverlap = QtGui.QLineEdit(self)
@@ -758,9 +756,6 @@ class Settings(QtGui.QDialog):
              "for rescaling using the width."))
         self.maxheightratio.setToolTip(self.tr("The maximal width to height ratio "\
              "for rescaling using the height."))
-        self.optview.setToolTip(self.tr("If active the width or height will "\
-             "be adapted so it will be a multiple of the viewer size if it "\
-             "is already close to it."))
         self.requiredoverlap.setToolTip(self.tr("Defines how close the width "\
              "or height has to be to be optimized to the viewer."))
         self.overlap.setToolTip(self.tr("Defines how much of the old image "\
@@ -780,8 +775,7 @@ class Settings(QtGui.QDialog):
         self.setTabOrder(self.defwidth,self.maxheightratio)
         self.setTabOrder(self.maxheightratio,self.maxwidthratio)
         self.setTabOrder(self.maxwidthratio,self.overlap)
-        self.setTabOrder(self.overlap,self.optview)
-        self.setTabOrder(self.optview,self.requiredoverlap)
+        self.setTabOrder(self.overlap,self.requiredoverlap)
         self.setTabOrder(self.requiredoverlap,self.preload)
         self.setTabOrder(self.preload,self.buffernumber)
         self.setTabOrder(self.buffernumber,self.shorttimeout)
@@ -802,8 +796,7 @@ class Settings(QtGui.QDialog):
         layout.addRow(self.tr("Max. H&eight Ratio:"),self.maxheightratio)
         layout.addRow(self.tr("Max. W&idth Ratio:"),self.maxwidthratio)
         layout.addRow(self.tr("&Movement Overlap (%):"),self.overlap)
-        layout.addRow(self.optview)
-        layout.addRow(self.tr("&Required Overlap (%):"),self.requiredoverlap)
+        layout.addRow(self.tr("&Optimzed Overlap (%):"),self.requiredoverlap)
         layout.addRow(self.tr("&Preload Number:"),self.preload)
         layout.addRow(self.tr("&Buffer Number:"),self.buffernumber)
         layout.addRow(self.tr("&Short Timeout (ms):"),self.shorttimeout)
@@ -823,8 +816,6 @@ class Settings(QtGui.QDialog):
         self.longtimeout.setText(text_type(settings['longtimeout']))
         self.overlap.setText(text_type(settings['overlap']))
         self.requiredoverlap.setText(text_type(settings['requiredoverlap']))
-        if settings['optimizeview']:
-            self.optview.setCheckState(QtCore.Qt.Checked)
         if settings['saveposition']:
             self.saveposition.setCheckState(QtCore.Qt.Checked)
             
@@ -846,7 +837,6 @@ class Settings(QtGui.QDialog):
         settings['requiredoverlap'] = int(self.requiredoverlap.text())
         settings['overlap'] = int(self.overlap.text())
         # convert bool to int so QSettings will not save it as a string
-        settings['optimizeview'] = int(self.optview.isChecked())
         settings['saveposition'] = int(self.saveposition.isChecked())
         settings['bgcolor'] = self.bgcolor
         self.settings = settings
@@ -1197,16 +1187,15 @@ class ImageViewer(QtGui.QGraphicsView):
                     width = self.defwidth
                     height = int(self.defwidth/ratio)
                     
-                if self.optimizeview:
-                    requiredperc = self.requiredoverlap/100.0
-                    wdiff = width-swidth
-                    hdiff = height-sheight
-                    if wdiff > 0 and (wdiff%move_h) < requiredperc*swidth:
-                        width = int(swidth+int(wdiff/move_h)*move_h)
-                        height = int(width/ratio)
-                    elif hdiff > 0 and (hdiff%move_v) < requiredperc*sheight:
-                        height = int(sheight+int(hdiff/move_v)*move_v)
-                        width  = int(height*ratio)
+                requiredperc = self.requiredoverlap/100.0
+                wdiff = width-swidth
+                hdiff = height-sheight
+                if wdiff > 0 and (wdiff%move_h) < requiredperc*swidth:
+                    width = int(swidth+int(wdiff/move_h)*move_h)
+                    height = int(width/ratio)
+                elif hdiff > 0 and (hdiff%move_v) < requiredperc*sheight:
+                    height = int(sheight+int(hdiff/move_v)*move_v)
+                    width  = int(height*ratio)
                 
                 csize = width, height
                 if csize == origsize:
@@ -1421,7 +1410,6 @@ class ImageViewer(QtGui.QGraphicsView):
             if sdict['defheight'] != self.defheight or \
                sdict['defwidth'] != self.defwidth or \
                sdict['overlap'] != self.overlap or \
-               sdict['optimizeview'] != self.optimizeview or \
                sdict['requiredoverlap'] != self.requiredoverlap:
                 self.clearBuffers()
                 if self.imagelist:
@@ -1440,7 +1428,10 @@ class ImageViewer(QtGui.QGraphicsView):
             zi = self.imagelist[self.cur]
             labelstr = u'%d/%d' % (self.cur+1,len(self.imagelist))
             if self.imgQ:
-                labelstr += u'<br />%d \u2715 %d' % self.imgQ.origsize
+                size = view.imgQ.size()
+                tpl = self.imgQ.origsize + (size.width(), size.height())
+                fmt = u'<br />%d \u2715 %d \u21D2 %d \u2715 %d'
+                labelstr += fmt % tpl
             labelstr += u'<br />%s' % zi.filename
             if isinstance(self.farch,WebWrapper):
                 labelstr += '<br \><a href="%s">%s</a>' % (zi.page_url,zi.page_url)
