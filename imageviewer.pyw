@@ -23,8 +23,10 @@ from six.moves.urllib.request import urlopen, Request
 from six.moves.urllib.error import HTTPError, URLError
 from six.moves.BaseHTTPServer import BaseHTTPRequestHandler
 from six.moves.urllib.parse import urlparse, ParseResult, urlunparse, quote
+from functools import partial
 #from six.moves import cStringIO as StringIO
 import PIL.Image as Image
+import PIL.ImageFile as ImageFile
 import PIL.ImageQt as ImageQt
 
 KNOWN_ARCHIVES = {'.zip','.cbz'}
@@ -49,6 +51,7 @@ except ImportError:
     pass
 
 Image.init()
+ImageFile.MAXBLOCK = 2**25
 
 INF_POINT = 100000
  
@@ -90,16 +93,18 @@ class ArchiveIO(BytesIO):
         self._parent = parent
         self._mode = mode
         self._fileinfo = fileinfo
+        self._opened = True
         
     def close(self):
-        if self._mode[0] in {'a','w'} and self._parent.handle:
+        if self._opened and self._mode[0] in {'a','w'} and self._parent.handle:
             self._parent.handle.writestr(self._fileinfo,self.getvalue())
             
+        self._opened = False
         BytesIO.close(self)
 
     def __exit__(self, type, value, traceback):
-        if type is None and self._mode[0] in {'a','w'} and self._parent.handle:
-            self._parent.handle.writestr(self._fileinfo,self.getvalue())
+#        if type is None and self._mode[0] in {'a','w'} and self._parent.handle and self._opened:
+#            self._parent.handle.writestr(self._fileinfo,self.getvalue())
         BytesIO.__exit__(self, type, value, traceback)
 
 class WebIOError(ArchiveIOError):
@@ -111,18 +116,34 @@ class WebIO(BytesIO):
     
     @staticmethod
     def iriToUri(iri):
-        return urlunparse([quote(c) if i < 3 else c for i, c in enumerate(urlparse(iri))])
+        return urlunparse([quote(c) if i == 2 else c for i, c in enumerate(urlparse(iri))])
 
     def __init__(self,url,data=None):
-        url = WebIO.iriToUri(url)
-        request = Request(url)
-        request.add_header('Accept-encoding', 'gzip')
-        request.add_header('User-Agent',self.user_agent) 
-        if data:
-            request.add_data(data)
+        try:
+            request = Request(url)
+            request.add_header('Accept-encoding', 'gzip')
+            request.add_header('User-Agent',self.user_agent) 
+            if data:
+                request.add_data(data)
+                
+            response  = urlopen(request)
+            print 'opened', url
+        except:
+            try:
+                url = self.iriToUri(url)
+    
+                request = Request(url)
+                request.add_header('Accept-encoding', 'gzip')
+                request.add_header('User-Agent',self.user_agent) 
+                if data:
+                    request.add_data(data)
+                    
+                response  = urlopen(request)
+                print 'opened 2nd', url
+            except Exception as err:
+                raise WebIOError(str(err))
         
         try:
-            response  = urlopen(request)
             if response.headers.get('Content-Encoding',''):
                 zipped = BytesIO(response.read())
                 with gzip.GzipFile(fileobj=zipped) as gzip_handle:
@@ -394,26 +415,34 @@ class ArchiveWrapper(object):
                 self.handle = zipfile.ZipFile(path,mode)
             except zipfile.BadZipfile as err:
                 raise ArchiveIOError(text_type(err))
-            self.filelist = self.handle.filelist
         elif ext.lower() in {'.rar','.cbr'} and '.rar' in self.formats:
             try:
                 self.handle = rarfile.RarFile(path,mode)
-                self.filelist = self.handle.infolist()
-                if self.filelist:
-                    # test if unrar works, i.e. can find unrar in path
-                    with self.handle.open(self.filelist[0]):
-                        pass
             except rarfile.BadRarFile as err:
                 raise ArchiveIOError(text_type(err))
             except rarfile.RarCannotExec as err:
                 raise ArchiveIOError(text_type(err))
+            except rarfile.NotRarFile as err:
+                raise ArchiveIOError(text_type(err))
+            except TypeError as err:
+                raise ArchiveIOError(text_type(err))
         elif os.path.isdir(path):
             self.handle = None
-            self.filelist = self.folderlist(path)
         else:
             raise ArchiveIOError('"%s" is not a supported archive' % path)
         
-        self.filelist = sorted(self.filelist,key=ArchiveWrapper.split_filename)
+    @property
+    def filelist(self):
+        if self.handle is None and self.path:
+            filelist = self.folderlist(self.path)
+        elif isinstance(self.handle, zipfile.ZipFile):
+            filelist = self.handle.filelist
+        elif isinstance(self.handle, rarfile.RarFile):
+            filelist = self.handle.infolist()
+        else:
+            filelist = []
+            
+        return sorted(filelist,key=ArchiveWrapper.split_filename)
     
     def open(self,fileinfo,mode):
         if mode in {'a','w'} and self.mode[0] == 'r':
@@ -426,7 +455,6 @@ class ArchiveWrapper(object):
             return open(fullpath,mode)
     
     def close(self):
-        self.filelist = []
         self.path = None
         self.mode = None
         if self.handle is not None:
@@ -523,6 +551,9 @@ class ArchiveWrapper(object):
     
     def __exit__(self, type, value, traceback):
         self.close()    
+        
+    def __contains__(self, filename):
+        return filename in (fi.filename for fi in self.filelist)
 
 class PdfIOError(ArchiveIOError):
     pass
@@ -570,9 +601,12 @@ class PdfWrapper(ArchiveWrapper):
                 filelist.append(PdfImage(cur))
             self.dll.pdf_drop_obj(obj)
                 
-        self.filelist = filelist[::-1]
+        self._filelist = filelist[::-1]
         
-            
+    @property
+    def filelist(self):
+        return self._filelist
+        
     def filter_images(self):
         return self.filelist
 
@@ -624,7 +658,11 @@ class WebWrapper(ArchiveWrapper):
             fileinfo = self._parse_url(url)
         else:
             fileinfo = ImageParser(url).find_image()
-        self.filelist = [fileinfo]
+        self._filelist = [fileinfo]
+    
+    @property
+    def filelist(self):
+        return self._filelist
     
     def filter_images(self):
         return self.filelist
@@ -707,7 +745,8 @@ class Settings(QtGui.QDialog):
     settings = {'defheight':1600,'shorttimeout':1000,'longtimeout':2000,
                 'requiredoverlap':50,'preload':5,'buffernumber':10,'defwidth':0,
                 'bgcolor':None,'saveposition':0,'overlap':20,'maxwidthratio':2.0,
-                'maxheightratio':2.0}
+                'maxheightratio':2.0, 'write_quality': 80, 'write_optimize':1,
+                'write_progressive':1}
                 
     def __init__(self,settings,parent=None):
         super(Settings,self).__init__(parent)
@@ -1078,6 +1117,27 @@ class ImageViewer(QtGui.QGraphicsView):
                          statusTip=self.tr("Close Viewer"), 
                          triggered=self.close)
                          
+        self.writing = []
+        self.auto_writing = set()
+        actions['save'] = QtGui.QAction(self.tr("Save as..."), self,
+                         shortcut=QtGui.QKeySequence.Save,
+                         statusTip=self.tr("Close Viewer"), 
+                         triggered=self.action_save)
+        for i in xrange(1, 10):
+            ckey = getattr(QtCore.Qt, 'Key_%d' % i)
+            caction = QtGui.QAction(self.tr("Append current image"), self,
+                      shortcut=QtGui.QKeySequence(ckey),
+                      triggered=partial(self.action_save_current, i-1))
+            actions['append_to_%d' % i] = caction
+            caction = QtGui.QAction(self.tr("Automatically append current image"), self,
+                      checkable=True,
+                      triggered=partial(self.action_save_auto, i-1))
+            actions['auto_%d' % i] = caction
+            caction = QtGui.QAction(self.tr("Close"), self,
+                      triggered=partial(self.action_save_close, i-1))
+            actions['close_%d' % i] = caction
+
+
         actions['movement'] = QtGui.QActionGroup(self)
         actions['movement'].triggered.connect(self.action_movement)
         rd = QtGui.QAction(self.tr("Right Down"),actions['movement'],checkable=True)
@@ -1226,6 +1286,10 @@ class ImageViewer(QtGui.QGraphicsView):
             self.imgQ.origsize = img.origsize
             scene.addPixmap(QtGui.QPixmap.fromImage(self.imgQ))
             self.centerOn(center)
+            
+            for ind in self.auto_writing:
+                self.action_save_current(ind)
+            
             if was_empty:
                 self.label.hide()
                 self.action_info()
@@ -1258,6 +1322,19 @@ class ImageViewer(QtGui.QGraphicsView):
     def contextMenuEvent(self, event):
         menu = QtGui.QMenu(self)
         menu.addAction(self.actions['open'])
+
+        sv_menu = menu.addMenu(self.tr('Save'))
+        for i, farch in enumerate(self.writing):
+            base, filename = os.path.split(farch.path)
+            c_menu = sv_menu.addMenu(filename)
+            c_append = self.actions['append_to_%d' % (i+1)]
+            c_auto = self.actions['auto_%d' % (i+1)]
+            c_close = self.actions['close_%d' % (i+1)]
+            c_menu.addAction(c_append)
+            c_menu.addAction(c_auto)
+            c_menu.addAction(c_close)
+        sv_menu.addAction(self.actions['save'])
+            
         menu.addAction(self.actions['prev_file'])
         menu.addAction(self.actions['reload'])
         menu.addAction(self.actions['next_file'])
@@ -1329,6 +1406,9 @@ class ImageViewer(QtGui.QGraphicsView):
         self.save_settings()
         if self.farch:
             self.farch.close()
+            
+        for farch in self.writing:
+            farch.close()
         
         self.clearBuffers()
         super(ImageViewer,self).closeEvent(e)
@@ -1390,6 +1470,67 @@ class ImageViewer(QtGui.QGraphicsView):
         if dialog.exec_():
             self.load_archive(dialog.selectedFiles()[0])
             
+    def action_save(self):
+        if len(self.writing) >= 9:
+            return
+        archives = '*.zip'
+        fpath = '/'
+        if self.farch:
+            fpath, name = os.path.split(self.farch.path)
+
+        path, dummy = QtGui.QFileDialog.getSaveFileName(self,
+                                                        dir=fpath,
+                                                        filter=archives)
+        if path:
+            try:
+                farch = ArchiveWrapper(path, 'w')
+                self.writing.append(farch)
+            except ArchiveIOError as err:
+                errormsg = text_type(err) or self.tr("Unkown Error")
+                errormsg = cgi.escape(errormsg)
+                self.label.setText(errormsg)
+                self.label.resize(self.label.sizeHint())
+                self.label.show()
+                self.labeltimer.start(self.longtimeout)
+
+    def action_save_current(self, archive_ind):
+        if archive_ind >= self.writing:
+            return
+        elif (not self.imagelist) or (self.cur >= len(self.imagelist)):
+            return
+        
+        base, filename = os.path.split(self.imagelist[self.cur].filename)
+        img = self.buffer.get(self.cur, None)
+        farch = self.writing[archive_ind]
+        if isinstance(img, Image.Image) and filename not in farch:
+            with farch.open(filename, 'w') as fout:
+                img.save(fout,'jpeg',quality=self.write_quality,
+                                     optimize=self.write_optimize,
+                                     progressive=self.write_progressive)
+            self.label.setText('Save %r to %r' % (filename, farch.path))
+            self.label.resize(self.label.sizeHint())
+            self.label.show()
+            self.labeltimer.start(self.longtimeout)
+            
+    def action_save_auto(self, archive_ind):
+        if archive_ind >= self.writing:
+            return
+        
+        if archive_ind in self.auto_writing:
+            self.auto_writing.remove(archive_ind)
+        else:
+            self.auto_writing.add(archive_ind)
+
+    def action_save_close(self, archive_ind):
+        if archive_ind >= self.writing:
+            return
+            
+        if archive_ind in self.auto_writing:
+            self.auto_writing.remove(archive_ind)
+
+        farch = self.writing.pop(archive_ind)
+        farch.close()
+
     def action_web_profile(self):
         dialog = WebProfileSettings(self)
         dialog.exec_()
