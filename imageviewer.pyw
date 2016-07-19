@@ -127,7 +127,6 @@ class WebIO(BytesIO):
                 request.add_data(data)
                 
             response  = urlopen(request)
-            print 'opened', url
         except:
             try:
                 url = self.iriToUri(url)
@@ -655,10 +654,9 @@ class WebWrapper(ArchiveWrapper):
                 self.sel_next = paths['next']
         
         if self.sel_img and self.sel_next:
-            fileinfo = self._parse_url(url)
+            self._filelist = self._parse_url(url)
         else:
-            fileinfo = ImageParser(url).find_image()
-        self._filelist = [fileinfo]
+            self._filelist = [ImageParser(url).find_image()]
     
     @property
     def filelist(self):
@@ -672,14 +670,13 @@ class WebWrapper(ArchiveWrapper):
         if lastinfo.next_page:
             try:
                 if self.sel_img and self.sel_next:
-                    nextinfo = self._parse_url(lastinfo.next_page)
+                    nextinfos = self._parse_url(lastinfo.next_page)
+                    self.filelist.extend(nextinfos)
                 else:
                     nextinfo = ImageParser(lastinfo.next_page).find_image()
+                    self.filelist.append(nextinfo)
             except WebIOError:
-                nextinfo = None
-                
-            if nextinfo is not None:
-                self.filelist.append(nextinfo)
+                pass
                 
     def open(self,fileinfo,mode):
         if mode in {'a','w'} and self.mode[0] == 'r':
@@ -710,13 +707,13 @@ class WebWrapper(ArchiveWrapper):
             nodes = bs4_select(soup, self.sel_img)
         except SelectorError as err:
             raise WebIOError('BeautifulSoup parse error: %s' % err.message)
-        image_url = nodes[0]['src'] if nodes else ''
-        image_url = self._fullpath(image_url, url)
+            
+        image_urls = [self._fullpath(node['src'], url) for node in nodes]
         
-        if not image_url:
+        if not image_urls:
             raise WebIOError("Could not find image in '%s'" % url)
         
-        return WebImage(image_url,url,next_url)
+        return [WebImage(curl, url, next_url) for curl in image_urls]
 
     @staticmethod
     def _fullpath(url, parent_url):
