@@ -13,6 +13,7 @@ except ImportError:
     QtCore.Signal = QtCore.pyqtSignal
     
 import zipfile,os,re,time,gzip,cgi
+import math
 #import htmllib,formatter
 from ast import literal_eval
 from ctypes import cdll,c_char_p
@@ -24,6 +25,7 @@ from six.moves.urllib.error import HTTPError, URLError
 from six.moves.BaseHTTPServer import BaseHTTPRequestHandler
 from six.moves.urllib.parse import urlparse, ParseResult, urlunparse, quote
 from functools import partial
+from collections import namedtuple
 #from six.moves import cStringIO as StringIO
 import PIL.Image as Image
 import PIL.ImageFile as ImageFile
@@ -694,7 +696,7 @@ class WebWrapper(ArchiveWrapper):
         with WebIO(url) as f_url:
             html_doc = f_url.tostring()
             
-        soup = BeautifulSoup(html_doc)
+        soup = BeautifulSoup(html_doc, "lxml")
         
         try:
             nodes = bs4_select(soup, self.sel_next)
@@ -711,6 +713,7 @@ class WebWrapper(ArchiveWrapper):
         image_urls = [self._fullpath(node['src'], url) for node in nodes]
         
         if not image_urls:
+            print 'No image found at %r with selector %r' % (url, self.sel_img)
             raise WebIOError("Could not find image in '%s'" % url)
         
         return [WebImage(curl, url, next_url) for curl in image_urls]
@@ -739,13 +742,16 @@ class WebWrapper(ArchiveWrapper):
         return ParseResult(*furl).geturl()
     
 class Settings(QtGui.QDialog):
-    settings = {'defheight':1600,'shorttimeout':1000,'longtimeout':2000,
-                'requiredoverlap':50,'preload':5,'buffernumber':10,'defwidth':0,
-                'bgcolor':None,'saveposition':0,'overlap':20,'maxwidthratio':2.0,
-                'maxheightratio':2.0, 'write_quality': 80, 'write_optimize':1,
-                'write_progressive':1}
-                
-    def __init__(self,settings,parent=None):
+    settings = {'shorttimeout':1000,'longtimeout':2000, 'requiredoverlap':50,
+                'preload':5,'buffernumber':10,
+                'bgcolor': QtGui.QColor(QtCore.Qt.white),
+                'saveposition':0,'overlap':20,'maxscale':200,
+                'minscale':20, 'write_quality': 80, 'write_optimize':1,
+                'write_progressive':1, 'scaling':'1000x1600=>0x1600'}
+    Tuple = namedtuple('Settings', settings.keys())
+    settings = Tuple(**settings)
+    
+    def __init__(self, settings, parent=None):
         super(Settings,self).__init__(parent)
         self.setWindowModality(QtCore.Qt.ApplicationModal)
         self.setWindowFlags(QtCore.Qt.Dialog|QtCore.Qt.FramelessWindowHint)
@@ -753,10 +759,9 @@ class Settings(QtGui.QDialog):
         
         self.preload = QtGui.QLineEdit(self)
         self.buffernumber = QtGui.QLineEdit(self)
-        self.defheight = QtGui.QLineEdit(self)
-        self.defwidth = QtGui.QLineEdit(self)
-        self.maxheightratio = QtGui.QLineEdit(self)
-        self.maxwidthratio = QtGui.QLineEdit(self)
+        self.scaling = QtGui.QTextEdit(self)
+        self.maxscale = QtGui.QLineEdit(self)
+        self.minscale = QtGui.QLineEdit(self)
         self.shorttimeout = QtGui.QLineEdit(self)
         self.longtimeout = QtGui.QLineEdit(self)
         self.requiredoverlap = QtGui.QLineEdit(self)
@@ -767,10 +772,8 @@ class Settings(QtGui.QDialog):
         self.buffernumber.setValidator(QtGui.QIntValidator())
         self.shorttimeout.setValidator(QtGui.QIntValidator())
         self.longtimeout.setValidator(QtGui.QIntValidator())
-        self.defheight.setValidator(QtGui.QIntValidator())
-        self.defwidth.setValidator(QtGui.QIntValidator())
-        self.maxheightratio.setValidator(QtGui.QDoubleValidator())
-        self.maxwidthratio.setValidator(QtGui.QDoubleValidator())
+        self.maxscale.setValidator(QtGui.QIntValidator())
+        self.minscale.setValidator(QtGui.QIntValidator())
         self.requiredoverlap.setValidator(QtGui.QIntValidator())
         self.overlap.setValidator(QtGui.QIntValidator())
 
@@ -782,16 +785,11 @@ class Settings(QtGui.QDialog):
              "status display appears after a page change."))
         self.longtimeout.setToolTip(self.tr("Number of miliseconds the status "\
              "display appears after an archive is loaded or an error occurs."))
-        self.defheight.setToolTip(self.tr("The default height an image should "\
-             "be scaled to if the aspect ratio of width to height is smaller "\
-             "than 2.\nHas priority over the default width, set to 0 to deactivate."))
-        self.defwidth.setToolTip(self.tr("The default width an image should "\
-             "be scaled to if the aspect ratio of height to width is smaller "\
-             "than 2.\nThe default height has the priority, set to 0 to deactivate."))
-        self.maxwidthratio.setToolTip(self.tr("The maximal height to width ratio "\
-             "for rescaling using the width."))
-        self.maxheightratio.setToolTip(self.tr("The maximal width to height ratio "\
-             "for rescaling using the height."))
+        self.scaling.setToolTip(self.tr("Defines a list of scalings to apply. "\
+             "Each line defines a scaling to use. The scaling with the closest "\
+             "matching ingong ratio will be used"))
+        self.maxscale.setToolTip(self.tr("The maxiamal possible scale value in percent"))
+        self.minscale.setToolTip(self.tr("The minimal possible scale value in percent"))
         self.requiredoverlap.setToolTip(self.tr("Defines how close the width "\
              "or height has to be to be optimized to the viewer."))
         self.overlap.setToolTip(self.tr("Defines how much of the old image "\
@@ -806,11 +804,10 @@ class Settings(QtGui.QDialog):
         self.bgcolor_btm = QtGui.QPushButton('',self)
         self.bgcolor_btm.clicked.connect(self.select_color)
 
-        self.setTabOrder(self.saveposition,self.defheight)
-        self.setTabOrder(self.defheight,self.defwidth)
-        self.setTabOrder(self.defwidth,self.maxheightratio)
-        self.setTabOrder(self.maxheightratio,self.maxwidthratio)
-        self.setTabOrder(self.maxwidthratio,self.overlap)
+        self.setTabOrder(self.saveposition,self.scaling)
+        self.setTabOrder(self.scaling,self.minscale)
+        self.setTabOrder(self.minscale,self.maxscale)
+        self.setTabOrder(self.maxscale,self.overlap)
         self.setTabOrder(self.overlap,self.requiredoverlap)
         self.setTabOrder(self.requiredoverlap,self.preload)
         self.setTabOrder(self.preload,self.buffernumber)
@@ -827,11 +824,10 @@ class Settings(QtGui.QDialog):
 
         layout = QtGui.QFormLayout()
         layout.addRow(self.saveposition)
-        layout.addRow(self.tr("Defaut &Height (px):"),self.defheight)
-        layout.addRow(self.tr("Defaut &Width (px):"),self.defwidth)
-        layout.addRow(self.tr("Max. H&eight Ratio:"),self.maxheightratio)
-        layout.addRow(self.tr("Max. W&idth Ratio:"),self.maxwidthratio)
-        layout.addRow(self.tr("&Movement Overlap (%):"),self.overlap)
+        layout.addRow(self.tr("Scalin&g:"),self.scaling)
+        layout.addRow(self.tr("M&in. Scale (%):"),self.minscale)
+        layout.addRow(self.tr("M&an. Scale (%):"),self.maxscale)
+        layout.addRow(self.tr("Movement &Overlap (%):"),self.overlap)
         layout.addRow(self.tr("&Optimzed Overlap (%):"),self.requiredoverlap)
         layout.addRow(self.tr("&Preload Number:"),self.preload)
         layout.addRow(self.tr("&Buffer Number:"),self.buffernumber)
@@ -842,21 +838,20 @@ class Settings(QtGui.QDialog):
 
         self.setLayout(layout)
         
-        self.preload.setText(text_type(settings['preload']))
-        self.buffernumber.setText(text_type(settings['buffernumber']))
-        self.defheight.setText(text_type(settings['defheight']))
-        self.defwidth.setText(text_type(settings['defwidth']))
-        self.maxheightratio.setText(text_type(settings['maxheightratio']))
-        self.maxwidthratio.setText(text_type(settings['maxwidthratio']))
-        self.shorttimeout.setText(text_type(settings['shorttimeout']))
-        self.longtimeout.setText(text_type(settings['longtimeout']))
-        self.overlap.setText(text_type(settings['overlap']))
-        self.requiredoverlap.setText(text_type(settings['requiredoverlap']))
-        if settings['saveposition']:
+        self.preload.setText(text_type(settings.preload))
+        self.buffernumber.setText(text_type(settings.buffernumber))
+        self.scaling.setText(text_type(settings.scaling))
+        self.maxscale.setText(text_type(settings.maxscale))
+        self.minscale.setText(text_type(settings.minscale))
+        self.shorttimeout.setText(text_type(settings.shorttimeout))
+        self.longtimeout.setText(text_type(settings.longtimeout))
+        self.overlap.setText(text_type(settings.overlap))
+        self.requiredoverlap.setText(text_type(settings.requiredoverlap))
+        if settings.saveposition:
             self.saveposition.setCheckState(QtCore.Qt.Checked)
             
-        self.bgcolor = settings['bgcolor']
-        style = "QPushButton { background-color : rgb(%d,%d,%d)}" % self.bgcolor.getRgb()[:3]
+        self.bgcolor = settings.bgcolor or QtGui.QColor(QtCore.Qt.white)
+        style = "QPushButton { background-color : rgba(%d,%d,%d,%d)}" % self.bgcolor.getRgb()
         self.bgcolor_btm.setStyleSheet(style)
 
         
@@ -864,10 +859,9 @@ class Settings(QtGui.QDialog):
         settings = {}
         settings['preload'] = int(self.preload.text())
         settings['buffernumber'] = int(self.buffernumber.text())
-        settings['defheight'] = int(self.defheight.text())
-        settings['defwidth'] = int(self.defwidth.text())
-        settings['maxheightratio'] = float(self.maxheightratio.text())
-        settings['maxwidthratio'] = float(self.maxwidthratio.text())
+        settings['scaling'] = text_type(self.scaling.toPlainText())
+        settings['maxscale'] = int(self.maxscale.text())
+        settings['minscale'] = int(self.minscale.text())
         settings['shorttimeout'] = int(self.shorttimeout.text())
         settings['longtimeout'] = int(self.longtimeout.text())
         settings['requiredoverlap'] = int(self.requiredoverlap.text())
@@ -875,13 +869,19 @@ class Settings(QtGui.QDialog):
         # convert bool to int so QSettings will not save it as a string
         settings['saveposition'] = int(self.saveposition.isChecked())
         settings['bgcolor'] = self.bgcolor
-        self.settings = settings
+        self.settings = self.dict2tuple(settings)
         super(Settings,self).accept()
         
     def select_color(self):
         self.bgcolor = QtGui.QColorDialog.getColor(self.bgcolor,self)
-        style = "QPushButton { background-color : rgb(%d,%d,%d)}" % self.bgcolor.getRgb()[:3]
+        style = "QPushButton { background-color : rgb(%d,%d,%d,%d)}" % self.bgcolor.getRgb()
         self.bgcolor_btm.setStyleSheet(style)
+        
+    @classmethod
+    def dict2tuple(cls, settings):
+        cdict = cls.settings._asdict()
+        cdict.update(settings)
+        return cls.Tuple(**cdict)
 
 class PageSelect(QtGui.QDialog):
     def __init__(self,parent=None):
@@ -1006,6 +1006,10 @@ class DroppingThread(QtCore.QThread):
         self.loaded_archive.emit()
 
 class ImageViewer(QtGui.QGraphicsView):
+    Scaling = namedtuple('Scaling', ['ratio', 'width', 'height'])
+    re_scaling = re.compile(r'(?P<iwidth>\d+)\s*x\s*(?P<iheight>\d+)\s*'\
+                            r'=\>\s*(?P<width>\d+)\s*x\s*(?P<height>\d+)')
+    
     def __init__(self,scene=None):
         super(ImageViewer,self).__init__(scene)
         self.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
@@ -1034,13 +1038,14 @@ class ImageViewer(QtGui.QGraphicsView):
         
         self.workers = {}
         self.buffer = {}
+        
 
         self.setAcceptDrops(True)
         self.imagelist = []
         self.farch = None
         self.imgQ = None
-        for key,value in iteritems(Settings.settings):
-            setattr(self,key,value)
+        self.settings = Settings.settings
+        self._build_scaling_list()
                         
         actions = {}
         actions['open'] = QtGui.QAction(self.tr("&Open"), self,
@@ -1220,7 +1225,7 @@ class ImageViewer(QtGui.QGraphicsView):
             self.label.setText(errormsg)
             self.label.resize(self.label.sizeHint())
             self.label.show()
-            self.labeltimer.start(self.longtimeout)
+            self.labeltimer.start(self.settings.longtimeout)
             return False
         else:
             return True
@@ -1233,18 +1238,43 @@ class ImageViewer(QtGui.QGraphicsView):
                 ratio = width/height
                 view_rect = self.viewport().rect()
                 swidth, sheight = view_rect.width(), view_rect.height()
-                move_h = int(swidth*(100-self.overlap)/100)
-                move_v = int(sheight*(100-self.overlap)/100)
+                move_h = int(swidth*(100-self.settings.overlap)/100)
+                move_v = int(sheight*(100-self.settings.overlap)/100)
                 origsize = width, height
                 
-                if ratio < self.maxheightratio and self.defheight:
-                    width = int(ratio*self.defheight)
-                    height = self.defheight
-                elif (ratio*self.maxwidthratio) > 1.0 and self.defwidth:
-                    width = self.defwidth
-                    height = int(self.defwidth/ratio)
+                cratio, defwidth, defheight = self.scaling_list[0]
+                best_match = abs(math.log(ratio/cratio))
+                for cratio, cwidth, cheight in self.scaling_list[1:]:
+                    cmatch = abs(math.log(ratio/cratio))
+                    if cmatch < best_match:
+                        defwidth = cwidth
+                        defheight = cheight
+                        best_match = cmatch
+                
+                if defwidth > 0:
+                    width_scale = defwidth / width
+                else:
+                    width_scale = float('inf')
+                
+                if defheight > 0:
+                    height_scale = defheight / height
+                else:
+                    height_scale = float('inf')
+                
+                if abs(math.log(height_scale)) < abs(math.log(width_scale)):
+                    scale = height_scale
+                else:
+                    scale = width_scale
+                
+                if scale > (self.settings.maxscale/100):
+                    scale = self.settings.maxscale/100
+                elif scale < (self.settings.minscale/100):
+                    scale = self.settings.minscale/100
                     
-                requiredperc = self.requiredoverlap/100.0
+                width = int(width*scale)
+                height = int(height*scale)
+                
+                requiredperc = self.settings.requiredoverlap/100.0
                 wdiff = width-swidth
                 hdiff = height-sheight
                 if wdiff > 0 and (wdiff%move_h) < requiredperc*swidth:
@@ -1290,12 +1320,12 @@ class ImageViewer(QtGui.QGraphicsView):
             if was_empty:
                 self.label.hide()
                 self.action_info()
-                self.labeltimer.start(self.longtimeout)
+                self.labeltimer.start(self.settings.longtimeout)
             else:
                 self.label.setText("%d/%d" % (self.cur+1,len(self.imagelist)))
                 self.label.resize(self.label.sizeHint())
                 self.label.show()
-                self.labeltimer.start(self.shorttimeout)
+                self.labeltimer.start(self.settings.shorttimeout)
         else:
             img = cgi.escape(img)
             text = "%d/%d<br />%s" % (self.cur+1,len(self.imagelist),img)
@@ -1412,7 +1442,7 @@ class ImageViewer(QtGui.QGraphicsView):
         
     def action_queued_image(self,pos,center=None):
         existing = set(self.workers)|set(self.buffer)
-        preloading = set(range(self.cur+1,self.cur+self.preload+1))
+        preloading = set(range(self.cur+1,self.cur+self.settings.preload+1))
         preloading &= set(range(len(self.imagelist)))
         loadcandidate = preloading-existing
         
@@ -1447,12 +1477,12 @@ class ImageViewer(QtGui.QGraphicsView):
         if pos == self.cur and pos in self.buffer:
             self.display_image(self.buffer[pos],center)
             
-        if len(self.buffer) > self.buffernumber:
+        if len(self.buffer) > self.settings.buffernumber:
             # .25 makes sure images before the current one get removed first
             # if they have the same distance to the image
             key = lambda x: abs(self.cur-x+.25)
             srtpos = sorted(set(self.buffer)-preloading,key=key)
-            for pos in srtpos[self.buffernumber:]:
+            for pos in srtpos[self.settings.buffernumber:]:
                 del self.buffer[pos]
     
     def action_open(self):
@@ -1488,7 +1518,7 @@ class ImageViewer(QtGui.QGraphicsView):
                 self.label.setText(errormsg)
                 self.label.resize(self.label.sizeHint())
                 self.label.show()
-                self.labeltimer.start(self.longtimeout)
+                self.labeltimer.start(self.settings.longtimeout)
 
     def action_save_current(self, archive_ind):
         if archive_ind >= self.writing:
@@ -1533,22 +1563,20 @@ class ImageViewer(QtGui.QGraphicsView):
         dialog.exec_()
 
     def action_settings(self):
-        sdict = {}
-        for s in Settings.settings:
-            sdict[s] = getattr(self,s)
-
-        dialog = Settings(sdict,self)
+        dialog = Settings(self.settings, self)
         if dialog.exec_():
-            for key, value in iteritems(dialog.settings):
-                setattr(self,key,value)
+            osettings = self.settings
+            self.settings = dialog.settings
+            self._build_scaling_list()
                 
-            if self.bgcolor != sdict['bgcolor']:
-                self.scene().setBackgroundBrush(self.bgcolor)
+            if osettings.bgcolor != self.settings.bgcolor:
+                self.scene().setBackgroundBrush(self.settings.bgcolor)
                 
-            if sdict['defheight'] != self.defheight or \
-               sdict['defwidth'] != self.defwidth or \
-               sdict['overlap'] != self.overlap or \
-               sdict['requiredoverlap'] != self.requiredoverlap:
+            if osettings.scaling != self.settings.scaling or \
+               osettings.minscale != self.settings.minscale or \
+               osettings.maxscale != self.settings.maxscale or \
+               osettings.overlap != self.settings.overlap or \
+               osettings.requiredoverlap != self.settings.requiredoverlap:
                 self.clearBuffers()
                 if self.imagelist:
                     self.action_queued_image(self.cur,self._mv_start)
@@ -1629,7 +1657,7 @@ class ImageViewer(QtGui.QGraphicsView):
             self.label.setText(errormsg)
             self.label.resize(self.label.sizeHint())
             self.label.show()
-            self.labeltimer.start(self.longtimeout)
+            self.labeltimer.start(self.settings.longtimeout)
             
     
     def action_prev_file(self):
@@ -1650,7 +1678,7 @@ class ImageViewer(QtGui.QGraphicsView):
             self.label.setText(errormsg)
             self.label.resize(self.label.sizeHint())
             self.label.show()
-            self.labeltimer.start(self.longtimeout)
+            self.labeltimer.start(self.settings.longtimeout)
             
         
     def action_first_image(self):
@@ -1671,7 +1699,7 @@ class ImageViewer(QtGui.QGraphicsView):
             self.label.setText(self.tr("No further images in this archive"))
             self.label.resize(self.label.sizeHint())
             self.label.show()
-            self.labeltimer.start(self.longtimeout)
+            self.labeltimer.start(self.settings.longtimeout)
         
     def action_prev_image(self):
         if self.imagelist and self.cur > 0:
@@ -1687,8 +1715,8 @@ class ImageViewer(QtGui.QGraphicsView):
         view_rect = self.viewport().rect()
         view_rect = self.mapToScene(view_rect).boundingRect()
         scene_rect = self.sceneRect()
-        move_h = int(view_rect.width()*(100-self.overlap)/100)
-        move_v = int(view_rect.height()*(100-self.overlap)/100)
+        move_h = int(view_rect.width()*(100-self.settings.overlap)/100)
+        move_v = int(view_rect.height()*(100-self.settings.overlap)/100)
         
         step = self._mv_next(scene_rect,view_rect,move_h,move_v)
         if step:
@@ -1700,8 +1728,8 @@ class ImageViewer(QtGui.QGraphicsView):
         view_rect = self.viewport().rect()
         view_rect = self.mapToScene(view_rect).boundingRect()
         scene_rect = self.sceneRect()
-        move_h = int(view_rect.width()*(100-self.overlap)/100)
-        move_v = int(view_rect.height()*(100-self.overlap)/100)
+        move_h = int(view_rect.width()*(100-self.settings.overlap)/100)
+        move_v = int(view_rect.height()*(100-self.settings.overlap)/100)
         step = self._mv_prev(scene_rect,view_rect,move_h,move_v)
         if step:
             self.centerOn(view_rect.center()+step)
@@ -1774,8 +1802,9 @@ class ImageViewer(QtGui.QGraphicsView):
         settings.setValue("movement", self._mv_next.__name__)
         settings.endGroup()        
         settings.beginGroup("Settings")
-        for key in Settings.settings:
-            settings.setValue(key,getattr(self,key))
+        csettings = self.settings._asdict()
+        for key, value in iteritems(csettings):
+            settings.setValue(key, value)
         settings.endGroup()
         settings.beginGroup("WebProfiles")
         for key,val in WebWrapper.profiles.items():
@@ -1783,7 +1812,7 @@ class ImageViewer(QtGui.QGraphicsView):
             settings.setValue(key,values)
         settings.endGroup()        
 
-        if self.saveposition and self.imagelist:
+        if self.settings.saveposition and self.imagelist:
             settings.beginGroup("History")
             if isinstance(self.farch,WebWrapper):
                 fileinfo = self.imagelist[self.cur]
@@ -1803,15 +1832,17 @@ class ImageViewer(QtGui.QGraphicsView):
         movement = settings.value("movement", 'move_right_down')
         settings.endGroup()        
         settings.beginGroup("Settings")
-        for key,defvalue in iteritems(Settings.settings):
+        csettings = self.settings._asdict()
+        for key, defvalue in iteritems(csettings):
             value = settings.value(key, defvalue)
             if defvalue is not None:
                 value = type(defvalue)(value)
-            setattr(self, key, value)
+            csettings[key] = value
+        self.settings = Settings.dict2tuple(csettings)
+        self._build_scaling_list()
         settings.endGroup()
-        
-        self.bgcolor = QtGui.QColor(self.bgcolor)
-        self.scene().setBackgroundBrush(self.bgcolor)
+
+        self.scene().setBackgroundBrush(self.settings.bgcolor)
         
         for key,(s,e,n,p) in iteritems(self.movement):
             if n.__name__ == movement:
@@ -1826,7 +1857,7 @@ class ImageViewer(QtGui.QGraphicsView):
                 WebWrapper.profiles[profile] = prof
         settings.endGroup()        
 
-        if self.saveposition:
+        if self.settings.saveposition:
             settings.beginGroup("History")
             path = settings.value("lastpath",'')
             pos = settings.value("lastpage",0)
@@ -1836,6 +1867,17 @@ class ImageViewer(QtGui.QGraphicsView):
         if isFullscreen:
             self.actions['fullscreen'].setChecked(QtCore.Qt.Checked)
         return isFullscreen
+        
+    def _build_scaling_list(self):
+        scaling_list = []
+        for line in self.settings.scaling.split('\n'):
+            line = line.strip()
+            match = self.re_scaling.match(line)
+            if match:
+                iw, ih, w, h = match.groups()
+                nscaling = self.Scaling(float(iw)/float(ih), int(w), int(h))
+                scaling_list.append(nscaling)
+        self.scaling_list = sorted(scaling_list)
     
 
 if __name__ == "__main__":
