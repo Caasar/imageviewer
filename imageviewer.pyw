@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-from __future__ import division
+from __future__ import division, print_function
 
 import sys
 
@@ -140,7 +140,7 @@ class WebIO(BytesIO):
                     request.add_data(data)
                     
                 response  = urlopen(request)
-                print 'opened 2nd', url
+                print('opened 2nd', url)
             except Exception as err:
                 raise WebIOError(str(err))
         
@@ -713,7 +713,7 @@ class WebWrapper(ArchiveWrapper):
         image_urls = [self._fullpath(node['src'], url) for node in nodes]
         
         if not image_urls:
-            print 'No image found at %r with selector %r' % (url, self.sel_img)
+            print('No image found at %r with selector %r' % (url, self.sel_img))
             raise WebIOError("Could not find image in '%s'" % url)
         
         return [WebImage(curl, url, next_url) for curl in image_urls]
@@ -1121,6 +1121,7 @@ class ImageViewer(QtGui.QGraphicsView):
                          
         self.writing = []
         self.auto_writing = set()
+        self.last_farchinfo = None
         actions['save'] = QtGui.QAction(self.tr("Save as..."), self,
                          shortcut=QtGui.QKeySequence.Save,
                          statusTip=self.tr("Close Viewer"), 
@@ -1314,8 +1315,8 @@ class ImageViewer(QtGui.QGraphicsView):
             scene.addPixmap(QtGui.QPixmap.fromImage(self.imgQ))
             self.centerOn(center)
             
-            for ind in self.auto_writing:
-                self.action_save_current(ind)
+            for farch in self.auto_writing:
+                self.action_save_current(self.writing.index(farch))
             
             if was_empty:
                 self.label.hide()
@@ -1356,6 +1357,7 @@ class ImageViewer(QtGui.QGraphicsView):
             c_menu = sv_menu.addMenu(filename)
             c_append = self.actions['append_to_%d' % (i+1)]
             c_auto = self.actions['auto_%d' % (i+1)]
+            c_auto.setChecked(farch in self.auto_writing)
             c_close = self.actions['close_%d' % (i+1)]
             c_menu.addAction(c_append)
             c_menu.addAction(c_auto)
@@ -1501,8 +1503,11 @@ class ImageViewer(QtGui.QGraphicsView):
         if len(self.writing) >= 9:
             return
         archives = '*.zip'
+        auto_add = False
         fpath = '/'
-        if self.farch:
+        if self.last_farchinfo is not None:
+            fpath, auto_add = self.last_farchinfo
+        elif self.farch:
             fpath, name = os.path.split(self.farch.path)
 
         path, dummy = QtGui.QFileDialog.getSaveFileName(self,
@@ -1512,6 +1517,8 @@ class ImageViewer(QtGui.QGraphicsView):
             try:
                 farch = ArchiveWrapper(path, 'w')
                 self.writing.append(farch)
+                if auto_add:
+                    self.auto_writing.add(farch)
             except ArchiveIOError as err:
                 errormsg = text_type(err) or self.tr("Unkown Error")
                 errormsg = cgi.escape(errormsg)
@@ -1527,35 +1534,43 @@ class ImageViewer(QtGui.QGraphicsView):
             return
         
         base, filename = os.path.split(self.imagelist[self.cur].filename)
+        #remove trailing part seperated by ?
+        filename = filename.split('?')[0].strip()
         img = self.buffer.get(self.cur, None)
         farch = self.writing[archive_ind]
         if isinstance(img, Image.Image) and filename not in farch:
             with farch.open(filename, 'w') as fout:
-                img.save(fout,'jpeg',quality=self.write_quality,
-                                     optimize=self.write_optimize,
-                                     progressive=self.write_progressive)
+                img.save(fout,'jpeg',quality=self.settings.write_quality,
+                                     optimize=self.settings.write_optimize,
+                                     progressive=self.settings.write_progressive)
             self.label.setText('Save %r to %r' % (filename, farch.path))
             self.label.resize(self.label.sizeHint())
             self.label.show()
-            self.labeltimer.start(self.longtimeout)
+            self.labeltimer.start(self.settings.longtimeout)
             
     def action_save_auto(self, archive_ind):
         if archive_ind >= self.writing:
             return
+            
+        farch = self.writing[archive_ind]
         
-        if archive_ind in self.auto_writing:
-            self.auto_writing.remove(archive_ind)
+        if farch in self.auto_writing:
+            self.auto_writing.remove(farch)
         else:
-            self.auto_writing.add(archive_ind)
+            self.auto_writing.add(farch)
 
     def action_save_close(self, archive_ind):
         if archive_ind >= self.writing:
             return
             
-        if archive_ind in self.auto_writing:
-            self.auto_writing.remove(archive_ind)
-
         farch = self.writing.pop(archive_ind)
+
+        if farch in self.auto_writing:
+            self.auto_writing.remove(farch)
+            self.last_farchinfo = farch.path, True
+        else:
+            self.last_farchinfo = farch.path, False
+
         farch.close()
 
     def action_web_profile(self):
