@@ -1115,7 +1115,7 @@ QLabel {
             self.label.setText(self.tr("No previous images in this archive"))
             self.label.resize(self.label.sizeHint())
             self.label.show()
-            self.labeltimer.start(self.longtimeout)
+            self.labeltimer.start(self.settings.longtimeout)
             
     def action_next(self):
         view_rect = self.viewport().rect()
