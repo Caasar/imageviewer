@@ -996,7 +996,7 @@ QLabel {
             a_tag = '<br \><a href="%s"><span style="color:white;">%s</span></a>'
             labelstr = u'%d/%d' % (self.cur+1,len(self.imagelist))
             if self.imgQ:
-                size = view.imgQ.size()
+                size = self.imgQ.size()
                 tpl = self.imgQ.origsize + (size.width(), size.height())
                 fmt = u'<br />%d \u2715 %d \u21D2 %d \u2715 %d'
                 labelstr += fmt % tpl
