@@ -28,7 +28,22 @@ import PIL.Image as Image
 import PIL.ImageQt as ImageQt
 
 INF_POINT = 100000
- 
+
+def open_wrapper(path):
+    """
+    Open the the correct Wrapper for the provided path.
+    """
+    dummy, ext = os.path.splitext(path)
+    if path.startswith('http'):
+        farch = WebWrapper(path)
+    elif ext.lower() == '.pdf' and '.pdf' in KNOWN_ARCHIVES:
+        farch = PdfWrapper(path)
+    else:
+        farch = ArchiveWrapper(path,'r')
+    
+    return farch
+    
+
 class WebProfileSettings(QtGui.QDialog):
     def __init__(self, *args):
         super(WebProfileSettings,self).__init__(*args)
@@ -366,21 +381,12 @@ class DroppingThread(QtCore.QThread):
         
     def run(self):
         try:
-            path = self.path
-            errormsg = ''
-            dummy, ext = os.path.splitext(path)
-            if path.startswith('http'):
-                farch = WebWrapper(path)
-            elif ext.lower() == '.pdf' and '.pdf' in KNOWN_ARCHIVES:
-                farch = PdfWrapper(path)
-            else:
-                farch = ArchiveWrapper(path,'r')
-                
+            self.farch = open_wrapper(self.path)
+            self.errmsg = None
         except WrapperIOError as err:
-            farch = None
-            errormsg = text_type(err) or self.tr("Unkown Error")
+            self.farch = None
+            self.errmsg = text_type(err) or "Unknown Error"
             
-        self.farch, self.errmsg = farch, errormsg
         self.loaded_archive.emit()
 
 class ImageViewer(QtGui.QGraphicsView):
@@ -555,7 +561,7 @@ QLabel {
         farch, errmsg = self.dropping.pop_archive()
         self.open_archive(farch,errmsg)
             
-    def load_archive(self,path,page=0):
+    def load_archive(self, path, page=0):
         """
         load the images in the archive given py path and show the first one.
         
@@ -571,52 +577,46 @@ QLabel {
                       if no images could be found in the archive.
         """
         try:
-            errormsg = ''
-            dummy, ext = os.path.splitext(path)
-            if path.startswith('http'):
-                farch = WebWrapper(path)
-            elif ext.lower() == '.pdf' and '.pdf' in KNOWN_ARCHIVES:
-                farch = PdfWrapper(path)
-            else:
-                farch = ArchiveWrapper(path,'r')
-                
+            farch = open_wrapper(path)
+            errormsg = None
         except WrapperIOError as err:
             farch = None
-            errormsg = text_type(err) or self.tr("Unknown Error")
+            errormsg = text_type(err) or "Unknown Error"
+        
+        return self.open_archive(farch, errormsg, page)
             
-        return self.open_archive(farch,errormsg,page)
-            
-    def open_archive(self,farch,errormsg,page=0):
-        if farch:
+    def open_archive(self, farch, errormsg,page=0):
+        try:
+            if farch is None:
+                raise WrapperIOError(errormsg)
+                
             imagelist = farch.filter_images()
             path, name = os.path.split(farch.path)
+
+            if len(imagelist) == 0:
+                raise WrapperIOError('No images found in "%s"') % name
                     
-            if imagelist:
-                self.clearBuffers()
-                self.farch = farch
-                self.imagelist = imagelist
-                if page < len(imagelist):
-                    self.cur = page
-                else:
-                    self.cur = 0
-                scene = self.scene()
-                scene.clear()
-                scene.setSceneRect(0,0,10,10)
-                self.setWindowTitle('%s - %s' % (name, self.tr("Image Viewer")))
-                self.action_queued_image(self.cur,self._mv_start)
+            self.clearBuffers()
+            self.farch = farch
+            self.imagelist = imagelist
+            if page < len(imagelist):
+                self.cur = page
             else:
-                errormsg = self.tr('No images found in "%s"') % name
+                self.cur = 0
+            scene = self.scene()
+            scene.clear()
+            scene.setSceneRect(0,0,10,10)
+            self.setWindowTitle('%s - %s' % (name, self.tr("Image Viewer")))
+            self.action_queued_image(self.cur,self._mv_start)
                 
-        if errormsg:
+        except WrapperIOError as err:
+            errormsg = text_type(err) or self.tr("Unknown Error")
             errormsg = cgi.escape(errormsg)
             self.label.setText(errormsg)
             self.label.resize(self.label.sizeHint())
             self.label.show()
             self.labeltimer.start(self.settings.longtimeout)
-            return False
-        else:
-            return True
-    
+
     def prepare_image(self,fileinfo):
         try:
             with self.farch.open(fileinfo,'rb') as fin:
