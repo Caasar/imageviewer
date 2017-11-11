@@ -18,7 +18,7 @@ import math
 from ast import literal_eval
 from ctypes import cdll,c_char_p
 from io import BytesIO
-from six import text_type, itervalues, iteritems, next, b
+from six import text_type, itervalues, iteritems, next, b, reraise
 from six.moves.html_parser import HTMLParser, HTMLParseError
 from six.moves.urllib.request import urlopen, Request
 from six.moves.urllib.error import HTTPError, URLError
@@ -124,7 +124,9 @@ class WebIO(BytesIO):
         try:
             request = Request(url)
             request.add_header('Accept-encoding', 'gzip')
-            request.add_header('User-Agent',self.user_agent) 
+            request.add_header('User-Agent',self.user_agent)
+            if self.forwarded_for:
+                request.add_header('X-Forwarded-For', self.forwarded_for)
             if data:
                 request.add_data(data)
                 
@@ -188,12 +190,13 @@ class WebIO(BytesIO):
 
 
 class WebImage(object):
-    def __init__(self,image_url,page_url,next_page=''):
-        dummy, filename = os.path.split(image_url)
-        self.image_url = image_url
+    def __init__(self,alt_urls,page_url,next_page=''):
+        dummy, filename = os.path.split(alt_urls[0])
+        self.image_url = alt_urls[0]
+        self.alt_urls = alt_urls
         self.page_url = page_url
         self.next_page = next_page
-        self.filename = filename or image_url
+        self.filename = filename or self.image_url
         
     def __hash__(self):
         return hash(self.image_url)
@@ -374,7 +377,7 @@ class ImageParser(HTMLParser):
         if image_url is None:
             raise WebIOError('No Image found at "%s"' % self.page_url)
             
-        return WebImage(image_url,self.page_url,next_page)
+        return WebImage([image_url],self.page_url,next_page)
         
     def _fullpath(self,url):
         purl = urlparse(url)
@@ -687,7 +690,15 @@ class WebWrapper(ArchiveWrapper):
         if fileinfo == self.filelist[-1]:
             self.load_next()
             
-        return WebIO(fileinfo.image_url)
+        
+        for curl in fileinfo.alt_urls:
+            try:
+                fileinfo.image_url = curl
+                return WebIO(curl)
+            except WebIOError:
+                None
+                
+        reraise(*sys.exc_info())
         
     def list_archives(self):
         return [], 0
@@ -710,13 +721,24 @@ class WebWrapper(ArchiveWrapper):
         except SelectorError as err:
             raise WebIOError('BeautifulSoup parse error: %s' % err.message)
             
-        image_urls = [self._fullpath(node['src'], url) for node in nodes]
+        images = [self._builditem(node, url, next_url) for node in nodes]
         
-        if not image_urls:
+        if not images:
             print('No image found at %r with selector %r' % (url, self.sel_img))
             raise WebIOError("Could not find image in '%s'" % url)
         
-        return [WebImage(curl, url, next_url) for curl in image_urls]
+        return images
+        
+    def _builditem(self, itag, url, next_url):
+        curls = [self._fullpath(itag['src'], url)]
+        onerror = itag.get('onerror', '')
+        assign = 'this.src='
+        if onerror.startswith(assign):
+            curl = onerror[len(assign):].strip().strip("'\"")
+            curl = self._fullpath(curl, url)
+            curls.append(curl)
+            
+        return WebImage(curls, url, next_url)
 
     @staticmethod
     def _fullpath(url, parent_url):
@@ -1009,6 +1031,14 @@ class ImageViewer(QtGui.QGraphicsView):
     Scaling = namedtuple('Scaling', ['ratio', 'width', 'height'])
     re_scaling = re.compile(r'(?P<iwidth>\d+)\s*x\s*(?P<iheight>\d+)\s*'\
                             r'=\>\s*(?P<width>\d+)\s*x\s*(?P<height>\d+)')
+    label_css = """
+QLabel { 
+    background-color : black; 
+    color : white; 
+    padding: 5px 5px 5px 5px;
+    border-radius: 5px; 
+}
+"""
     
     def __init__(self,scene=None):
         super(ImageViewer,self).__init__(scene)
@@ -1024,7 +1054,7 @@ class ImageViewer(QtGui.QGraphicsView):
         self.dropping.loaded_archive.connect(self.load_dropped_archive)
  
         self.label = QtGui.QLabel(self.tr('Nothing to show<br \>Open an image archive'),self)
-        self.label.setStyleSheet("QLabel { background-color : black; color : white; padding: 5px 5px 5px 5px;border-radius: 5px; }")
+        self.label.setStyleSheet(self.label_css)
         self.label.setOpenExternalLinks(True)
         self.label.setTextFormat(QtCore.Qt.RichText)
         self.label.move(10,10)
@@ -1607,15 +1637,20 @@ class ImageViewer(QtGui.QGraphicsView):
     def action_info(self):
         if self.label.isHidden() and self.imagelist:
             zi = self.imagelist[self.cur]
+            a_tag = '<br \><a href="%s"><span style="color:white;">%s</span></a>'
             labelstr = u'%d/%d' % (self.cur+1,len(self.imagelist))
             if self.imgQ:
                 size = view.imgQ.size()
                 tpl = self.imgQ.origsize + (size.width(), size.height())
                 fmt = u'<br />%d \u2715 %d \u21D2 %d \u2715 %d'
                 labelstr += fmt % tpl
-            labelstr += u'<br />%s' % zi.filename
-            if isinstance(self.farch,WebWrapper):
-                labelstr += '<br \><a href="%s">%s</a>' % (zi.page_url,zi.page_url)
+            if hasattr(zi, 'image_url'):
+                labelstr += a_tag % (zi.image_url, zi.filename)
+            else:
+                labelstr += u'<br />%s' % zi.filename
+
+            if hasattr(zi, 'page_url'):
+                labelstr += a_tag % (zi.page_url,zi.page_url)
             else:
                 path, archname = os.path.split(self.farch.path)
                 labelstr += '<br \>%s' % archname
