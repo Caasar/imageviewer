@@ -22,10 +22,9 @@ from wrapper import KNOWN_ARCHIVES, WrapperIOError
 from wrapper.archive import ArchiveWrapper
 from wrapper.pdf import PdfWrapper
 from wrapper.web import WebWrapper
+from movers import known_movers
 import PIL.Image as Image
 import PIL.ImageQt as ImageQt
-
-INF_POINT = 1000000000
 
 def open_wrapper(path):
     """
@@ -344,19 +343,22 @@ class PageSelect(QtGui.QDialog):
 class WorkerThread(QtCore.QThread):
     loaded = QtCore.Signal(int)
     
-    def __init__(self,viewer,pos,center=None):
-        super(WorkerThread,self).__init__(viewer)
-        self.viewer = viewer
-        self.fileinfo = viewer.imagelist[pos]
+    def __init__(self, manager, pos):
+        super(WorkerThread,self).__init__(manager.viewer)
+        self.manager = manager
+        self.fileinfo = manager.imagelist[pos]
         self.pos = pos
-        self.center = center
         self.error = ''
         self.img = None
+        self.origsize = None
         # necessary to remove handle in viewer
         self.finished.connect(self.removeParent) 
         
     def run(self):
-        self.img, self.error = self.viewer.prepare_image(self.fileinfo)
+        try:
+            self.img, self.origsize = self.manager.prepare_image(self.fileinfo)
+        except IOError as err:
+            self.error = text_type(err) or 'Unknown Image Loading Error'
         self.loaded.emit(self.pos)
         
     def removeParent(self):
@@ -376,10 +378,13 @@ class DroppingThread(QtCore.QThread):
         return self
         
     def pop_archive(self):
-        tpl = self.farch, self.errmsg
+        if self.farch is None:
+            raise WrapperIOError(self.errmsg or 'Unknown Error')
+        
+        farch = self.farch
         self.farch = None
-        self.errmsg = None
-        return tpl
+        self.errmsg = ''
+        return farch
         
     def run(self):
         try:
@@ -390,11 +395,486 @@ class DroppingThread(QtCore.QThread):
             self.errmsg = text_type(err) or "Unknown Error"
             
         self.loaded_archive.emit()
+        
 
-class ImageViewer(QtGui.QGraphicsView):
+class ImageManager(object):
+    DATA_IND = 0
+    DATA_SIZE = 1
+    DATA_ORIGSIZE = 2
     Scaling = namedtuple('Scaling', ['ratio', 'width', 'height'])
     re_scaling = re.compile(r'(?P<iwidth>\d+)\s*x\s*(?P<iheight>\d+)\s*'\
                             r'=\>\s*(?P<width>\d+)\s*x\s*(?P<height>\d+)')
+    
+    def __init__(self, viewer, settings):
+        movers = [m(viewer) for m in known_movers()]
+        self.viewer = viewer
+        self._scaling_list = []
+        self.wrapper = None
+        self.workers = {}
+        self.imagelist = []
+        self._images = dict()
+        self._errors = dict()
+        self._continuous = False
+        self._initialized = False
+        
+        self._movers = dict((m.name, m) for m in movers)
+        self._mover = None
+        self._to_show = None
+        
+        # set the first mover as the default one
+        self.mover = self.movers[0]
+        self.settings = settings
+        self.set_settings(settings)
+        
+    def show_page(self, page, anchor='Start'):
+        """
+        Show the given page of the loaded archive.
+        
+        Parameters
+        ----------
+        page : int
+            The zero based index of the page to show.
+        anchor : str
+            Defines what part of the page to show. Options are 'Start' and
+            'End'
+        """
+        item = self._get_pixmap(page)
+        if item is not None :
+            if not item.isVisible():
+                self._to_show = page
+                self._reoder_items()
+            self._to_show = None
+            if anchor == 'End':
+                view_rect = self._mover.last_view(item)
+            else:
+                view_rect = self._mover.first_view(item)
+            self.viewer.centerOn(view_rect.center())
+            print(page, self._initialized)
+            if self._initialized:
+                self.viewer.show_page_info.emit()
+            else:
+                self._initialized = True
+                self.viewer.show_status_info.emit()
+            self._update_bookkeeping()
+        elif page >= 0 and page < self.page_count:
+            self._to_show = page
+            self._load_page(page)
+            
+    def set_settings(self, settings, continuous=False):
+        refresh = continuous != self._continuous or \
+                  settings.scaling != self.settings.scaling or \
+                  settings.minscale != self.settings.minscale or \
+                  settings.maxscale != self.settings.maxscale or \
+                  settings.overlap != self.settings.overlap or \
+                  settings.requiredoverlap != self.settings.requiredoverlap
+
+        scaling_list = []
+        for line in settings.scaling.split('\n'):
+            line = line.strip()
+            match = self.re_scaling.match(line)
+            if match:
+                iw, ih, w, h = match.groups()
+                nscaling = self.Scaling(float(iw)/float(ih), int(w), int(h))
+                scaling_list.append(nscaling)
+        
+        self.settings = settings
+        self.scaling_list = sorted(scaling_list)
+        self._continuous = continuous
+        if refresh:
+            self.refresh()
+        
+    def open_archive(self, wrapper, page=0):
+        imagelist = wrapper.filter_images()
+        path, name = os.path.split(wrapper.path)
+
+        scene = self.viewer.scene()
+        scene.clear()
+        scene.setSceneRect(0,0,0,0)
+
+        if len(imagelist) == 0:
+            raise WrapperIOError('No images found in "%s"') % name
+                
+        self.clearBuffers()
+        self.wrapper = wrapper
+        self.imagelist = imagelist
+        self.rectlist = [None for zi in self.imagelist]
+        self._to_show = page
+        self._load_page(page)
+
+    def prepare_image(self, fileinfo):
+        """
+        Open the image referenced in fileinfo and scale at it to the correct
+        size.
+        
+        Parameters
+        ----------
+        fileinfo : FileInfo
+            A fileinfo object of the currently loaded wrapper
+        """
+        
+        with self.wrapper.open(fileinfo,'rb') as fin:
+            img = Image.open(fin)
+            origsize = img.size
+            img = self._fit_image(img)
+
+        return img, origsize
+        
+    def refresh(self):
+        if self:
+            page = self._to_show or self.page
+            self.clearBuffers()
+            self._to_show = page
+            self._load_page(page)
+        
+    def close(self):
+        self.clearBuffers()
+        if self.wrapper is not None:
+            self.wrapper.close()
+            self.wrapper = None
+            self.imagelist = []
+        
+    def clearBuffers(self):
+        for worker in itervalues(self.workers):
+            worker.terminate()
+        self.workers.clear()
+        self.viewer.scene().clear()
+        self._images = dict()
+        self._errors = dict()
+        self._to_show = None
+        self._initialized = False
+        
+    def get_buffered_image(self, page):
+        """
+        Return the buffered PIL image of the given page, if availible
+        """
+        if page in self._images:
+            return self._images[page][1]
+        
+    def action_first_image(self):
+        self.show_page(0, 'Start')
+
+    def action_last_image(self):
+        self.show_page(self.page_count-1, 'End')
+            
+    def action_next_image(self):
+        next_page = self.page + 1
+        if next_page < self.page_count:
+            self.show_page(next_page, 'Start')
+        else:
+            self.action_last_image()
+        
+    def action_prev_image(self):
+        next_page = self.page - 1
+        if next_page >= 0:
+            self.show_page(next_page, 'End')
+        else:
+            self.action_first_image()
+            
+    def action_next(self):
+        prev_page = self.page
+        next_view, changed = self._mover.next_view(self.settings.overlap)
+        self.viewer.centerOn(next_view.center())
+        if not changed and not self._continuous:
+            self.action_next_image()
+        elif prev_page != self.page:
+            self.viewer.show_page_info.emit()
+            self._update_bookkeeping()
+
+    def action_prev(self):
+        prev_page = self.page
+        next_view, changed = self._mover.prev_view(self.settings.overlap)
+        self.viewer.centerOn(next_view.center())
+        if not changed and not self._continuous:
+            self.action_prev_image()
+        elif prev_page != self.page:
+            self.viewer.show_page_info.emit()
+            self._update_bookkeeping()
+            
+    @property
+    def movers(self):
+        return sorted(self._movers)
+        
+    @property
+    def mover(self):
+        return self._mover.name
+    
+    @mover.setter
+    def mover(self, name):
+        self._mover = self._movers.get(name, self._mover)
+        self._reoder_items()
+        
+    @property
+    def pixmap_item(self):
+        view_rect = self.viewer.viewport().rect()
+        view_rect = self.viewer.mapToScene(view_rect).boundingRect()
+        return self._view_page(view_rect)
+        
+    @property
+    def page(self):
+        item = self.pixmap_item
+        if item is None:
+            return None
+        else:
+            return item.data(self.DATA_IND)
+    
+    @property
+    def page_count(self):
+        return len(self.imagelist)
+        
+    @property
+    def page_description(self):
+        infos = {}
+        item = self.pixmap_item
+        if item is not None:
+            page = item.data(self.DATA_IND)
+            zi = self.imagelist[page]
+            infos['page'] = page
+            infos['page_count'] = self.page_count
+            infos['error'] = self._errors.get(page, '')
+            infos['info'] = u'%d/%d' % (page+1, self.page_count)
+            infos['size'] = tuple(item.data(self.DATA_SIZE))
+            infos['origsize'] = tuple(item.data(self.DATA_ORIGSIZE))
+            
+            if hasattr(zi, 'image_url'):
+                infos['image_url'] = zi.image_url
+            infos['filename'] = zi.filename
+    
+            if hasattr(zi, 'page_url'):
+                infos['page_url'] = zi.page_url
+        else:
+            infos['info'] = u'No Images loaded'
+            infos.append()
+                
+        if self.wrapper is not None and not isinstance(self.wrapper, WebWrapper):
+            infos['archpath'] = self.wrapper.path
+            _, infos['archname'] = os.path.split(self.wrapper.path)
+            
+        return infos
+            
+    @property
+    def status_info(self):
+        infos = self.page_description
+        if self.workers:
+            loading = ','.join(text_type(p+1) for p in sorted(self.workers))
+            cinfo = u'Loading %s' % loading
+            infos['status'] = cinfo
+        return infos
+
+    @property
+    def loaded_pages(self):
+        scene = self.viewer.scene()
+        return dict((item.data(self.DATA_IND), item) for item in scene.items())
+        
+    @property
+    def path(self):
+        return self.wrapper.path if self.wrapper is not None else ''
+
+    def _get_pixmap(self, page):
+        for item in self.viewer.scene().items():
+            if item.data(self.DATA_IND) == page:
+                return item
+            
+    def _view_page(self, view_rect):
+        # search for the item at the center of the provided view_rect
+        center_item = None
+        center = view_rect.center()
+        # no item at the center search for the item with the largest 
+        # overlap with the view_rect
+        max_item = None
+        max_surf = 0.0
+        for item in self.viewer.scene().items():
+            if item.isVisible():
+                cur_bb = item.boundingRect()
+                intersection = cur_bb & view_rect
+                cur_surf = intersection.height() * intersection.width()
+                if cur_surf > max_surf:
+                    max_item = item
+                    max_surf = cur_surf
+                if item.contains(center):
+                    center_item = item
+                
+        return center_item or max_item
+        
+    def _fit_image(self, img):
+        width, height = img.size
+        ratio = width/height
+        view_rect = self.viewer.viewport().rect()
+        swidth, sheight = view_rect.width(), view_rect.height()
+        move_h = int(swidth*(100-self.settings.overlap)/100)
+        move_v = int(sheight*(100-self.settings.overlap)/100)
+        origsize = width, height
+        
+        cratio, defwidth, defheight = self.scaling_list[0]
+        best_match = abs(math.log(ratio/cratio))
+        for cratio, cwidth, cheight in self.scaling_list[1:]:
+            cmatch = abs(math.log(ratio/cratio))
+            if cmatch < best_match:
+                defwidth = cwidth
+                defheight = cheight
+                best_match = cmatch
+        
+        if defwidth > 0:
+            width_scale = defwidth / width
+        else:
+            width_scale = float('inf')
+        
+        if defheight > 0:
+            height_scale = defheight / height
+        else:
+            height_scale = float('inf')
+        
+        if abs(math.log(height_scale)) < abs(math.log(width_scale)):
+            scale = height_scale
+        else:
+            scale = width_scale
+        
+        if scale > (self.settings.maxscale/100):
+            scale = self.settings.maxscale/100
+        elif scale < (self.settings.minscale/100):
+            scale = self.settings.minscale/100
+            
+        width = int(width*scale)
+        height = int(height*scale)
+        
+        if not self._continuous:        
+            requiredperc = self.settings.requiredoverlap/100.0
+            wdiff = width-swidth
+            hdiff = height-sheight
+            if wdiff > 0 and (wdiff%move_h) < requiredperc*swidth:
+                width = int(swidth+int(wdiff/move_h)*move_h)
+                height = int(width/ratio)
+            elif hdiff > 0 and (hdiff%move_v) < requiredperc*sheight:
+                height = int(sheight+int(hdiff/move_v)*move_v)
+                width  = int(height*ratio)
+        
+        csize = width, height
+        if csize == origsize:
+            img = img.convert('RGB')
+        elif csize[0] > .5*origsize[0]:
+            img = img.convert('RGB').resize(csize,Image.ANTIALIAS)
+        else:
+            img.thumbnail(csize,Image.ANTIALIAS)
+            img = img.convert('RGB')
+            
+        return img
+        
+    def _load_page(self, page):
+        toload = page+1
+        vis_page = self.page
+        if vis_page is None:
+            vis_page = toload
+            
+        if page not in self.loaded_pages and page not in self.workers and \
+          page >= 0 and page < len(self.imagelist):
+            self.workers[page] = worker = WorkerThread(self, page)
+            worker.loaded.connect(self._insert_page)
+            worker.start()
+
+    def _insert_page(self, page):
+        worker = self.workers.pop(page)
+        scene = self.viewer.scene()
+            
+        if worker.img is None:
+            size = 10, 10
+            image = None
+            pixmap = QtGui.QPixmap(*size)
+        else:
+            size = worker.img.size
+            image = ImageQt.ImageQt(worker.img)
+            self.image = image
+            pixmap = QtGui.QPixmap.fromImage(image)
+            
+        item = scene.addPixmap(pixmap)
+        item.setData(self.DATA_IND, page)
+        item.setData(self.DATA_ORIGSIZE, worker.origsize)
+        item.setData(self.DATA_SIZE, size)
+        item.hide()
+        self._images[page] = image, worker.img
+        self._errors[page] = worker.error
+        self._reoder_items()
+        
+        if self._to_show == page:
+            self._to_show = None
+            self.show_page(page)
+        else:
+            self._update_bookkeeping()
+        
+    def _update_bookkeeping(self):
+        vis_page = self._to_show or self.page or 0
+        loaded_pages = self.loaded_pages
+        existing = set(loaded_pages) | set(self.workers)
+        preloading = set(range(vis_page+1, vis_page+self.settings.preload+1))
+        preloading &= set(range(self.page_count))
+        loadcandidate = preloading-existing
+
+
+        if loadcandidate:
+            self._load_page(min(loadcandidate))
+
+        if len(loaded_pages) > self.settings.buffernumber:
+            # .25 makes sure images before the current one get removed first
+            # if they have the same distance to the image
+            scene = self.viewer.scene()
+            key = lambda x: abs(vis_page-x+.25)
+            srtpos = sorted(set(loaded_pages)-preloading,key=key)
+            for pos in srtpos[self.settings.buffernumber:]:
+                item = loaded_pages.pop(pos)
+                scene.removeItem(item)
+                del self._images[pos]
+
+            self._reoder_items()
+        
+    def _reoder_items(self):
+        scene = self.viewer.scene()
+        view_rect = self.viewer.viewport().rect()
+        view_rect = self.viewer.mapToScene(view_rect).boundingRect()
+        items = self.loaded_pages
+        if self._to_show is not None and self._to_show in items:
+            view_page = self._to_show
+        else:
+            view_page = self.page
+        view_item = self.pixmap_item
+        if view_item is not None:
+            view_shift = view_rect.center() - view_item.boundingRect().center()
+        
+        # show all pages directly connected to the currently page in focues
+        pages = sorted(items)
+        show_pages = {view_page}
+        if self._continuous:
+            try:
+                view_pos = pages.index(view_page)
+            except ValueError:
+                view_pos = 0
+            for cind in pages[view_pos+1:]:
+                if (cind-1) in show_pages:
+                    show_pages.add(cind)
+            for cind in pages[:view_pos][::-1]:
+                if (cind+1) in show_pages:
+                    show_pages.add(cind)
+        
+        scene_rect = QtCore.QRectF(0, 0, 0, 0)
+        for cind, item in sorted(iteritems(items)):
+            if cind in show_pages:
+                item_rect = item.boundingRect()
+                scene_rect = self._mover.append_item(scene_rect, item_rect)
+                item.setOffset(item_rect.topLeft())
+            
+        scene.setSceneRect(scene_rect)
+        # shift view to show the same section as before the reorder
+        if view_item is not None:
+            ncenter = view_item.boundingRect().center() + view_shift
+            self.viewer.centerOn(ncenter)
+            
+        for cind, item in iteritems(items):
+            item.setVisible(cind in show_pages)
+        
+    def __nonzero__(self):
+        return self.wrapper is not None and self.page is not None
+
+class ImageViewer(QtGui.QGraphicsView):
+    show_page_info = QtCore.Signal()
+    show_status_info = QtCore.Signal()
+    
     label_css = """
 QLabel { 
     background-color : black; 
@@ -431,17 +911,14 @@ QLabel {
         
         self.pageselect = PageSelect(self)
         
-        self.workers = {}
-        self.buffer = {}
-        
-
         self.setAcceptDrops(True)
-        self.imagelist = []
-        self.farch = None
-        self.imgQ = None
         self.settings = Settings.settings
-        self._build_scaling_list()
+        self.manager = ImageManager(self, Settings.settings)
+        self.manager.scaling_list = self.settings.scaling
+        self.show_page_info.connect(self.action_page_info)
+        self.show_status_info.connect(self.action_status_info)
                         
+        actions = {}
         actions = {}
         actions['open'] = QtGui.QAction(self.tr("&Open"), self,
                         shortcut=QtGui.QKeySequence.Open,
@@ -470,11 +947,11 @@ QLabel {
         actions['next'] = QtGui.QAction(self.tr("Next View"), self,
                          shortcut=QtGui.QKeySequence(QtCore.Qt.Key_Space),
                          statusTip=self.tr("Show next image part"), 
-                         triggered=self.action_next)
+                         triggered=self.manager.action_next)
         actions['prev'] = QtGui.QAction(self.tr("Previous View"), self,
                          shortcut=QtGui.QKeySequence("Shift+Space"),
                          statusTip=self.tr("Show previous image part"), 
-                         triggered=self.action_prev)
+                         triggered=self.manager.action_prev)
         actions['page'] = QtGui.QAction(self.tr("Select Page"), self,
                          shortcut=QtGui.QKeySequence(QtCore.Qt.Key_P),
                          statusTip=self.tr("Select the an image"), 
@@ -487,19 +964,24 @@ QLabel {
         actions['first_image'] = QtGui.QAction(self.tr("First Image"), self,
                          shortcut=QtGui.QKeySequence.MoveToStartOfLine,
                          statusTip=self.tr("Show first image"), 
-                         triggered=self.action_first_image)
+                         triggered=self.manager.action_first_image)
         actions['last_image'] = QtGui.QAction(self.tr("Last Image"), self,
                          shortcut=QtGui.QKeySequence.MoveToEndOfLine,
                          statusTip=self.tr("Show last image"), 
-                         triggered=self.action_last_image)
+                         triggered=self.manager.action_last_image)
         actions['next_image'] = QtGui.QAction(self.tr("Next Image"), self,
                          shortcut=QtGui.QKeySequence.MoveToNextPage,
                          statusTip=self.tr("Show next image"), 
-                         triggered=self.action_next_image)
+                         triggered=self.manager.action_next_image)
         actions['prev_image'] = QtGui.QAction(self.tr("Previous Image"), self,
                          shortcut=QtGui.QKeySequence.MoveToPreviousPage,
                          statusTip=self.tr("Show previous image"), 
-                         triggered=self.action_prev_image)
+                         triggered=self.manager.action_prev_image)
+        actions['continuous'] = QtGui.QAction(self.tr("Continuous"), self,
+                         shortcut=QtGui.QKeySequence(QtCore.Qt.Key_C),
+                         checkable=True,
+                         statusTip=self.tr("Continuous Flow"), 
+                         triggered=self.action_toggle_continuous)
         actions['fullscreen'] = QtGui.QAction(self.tr("Fullscreen"), self,
                          shortcut=QtGui.QKeySequence(QtCore.Qt.Key_F),
                          checkable=True,
@@ -539,31 +1021,34 @@ QLabel {
 
         actions['movement'] = QtGui.QActionGroup(self)
         actions['movement'].triggered.connect(self.action_movement)
-        rd = QtGui.QAction(self.tr("Right Down"),actions['movement'],checkable=True)
-        ld = QtGui.QAction(self.tr("Left Down"),actions['movement'],checkable=True)
-        dr = QtGui.QAction(self.tr("Down Right"),actions['movement'],checkable=True)
-        dl = QtGui.QAction(self.tr("Down Left"),actions['movement'],checkable=True)
-        
-        lt = QtCore.QPointF(0,0)
-        rt = QtCore.QPointF(INF_POINT,0)
-        lb = QtCore.QPointF(0,INF_POINT)
-        rb = QtCore.QPointF(INF_POINT,INF_POINT)
-        movements = {}
-        movements[rd] = lt, rb, self.move_right_down, self.move_left_up
-        movements[dr] = lt, rb, self.move_down_right, self.move_up_left
-        movements[ld] = rt, lb, self.move_left_down, self.move_right_up
-        movements[dl] = rt, lb, self.move_down_left, self.move_up_right
-        self.movement = movements
-        self.action_movement(rd)
-        
+        for mover in self.manager.movers:
+            act = QtGui.QAction(self.tr(mover), actions['movement'], 
+                                checkable=True)
+            if mover == self.manager.mover:
+                act.setChecked(True)
+            
         for act in itervalues(actions):
             if isinstance(act,QtGui.QAction):
                 self.addAction(act)
         self.actions = actions
         
     def load_dropped_archive(self):
-        farch, errmsg = self.dropping.pop_archive()
-        self.open_archive(farch,errmsg)
+        try:
+            farch = self.dropping.pop_archive()
+            _, name = os.path.split(farch.path)
+            ntitle = '%s - %s' % (name, self.tr("Image Viewer"))
+            self.manager.open_archive(farch)
+            self.setWindowTitle(ntitle)
+            return True
+
+        except WrapperIOError as err:
+            errormsg = text_type(err) or self.tr("Unknown Error")
+            errormsg = cgi.escape(errormsg)
+            self.label.setText(errormsg)
+            self.label.resize(self.label.sizeHint())
+            self.label.show()
+            self.labeltimer.start(self.settings.longtimeout)
+            return False
             
     def load_archive(self, path, page=0):
         """
@@ -582,37 +1067,12 @@ QLabel {
         """
         try:
             farch = open_wrapper(path)
-            errormsg = None
-        except WrapperIOError as err:
-            farch = None
-            errormsg = text_type(err) or "Unknown Error"
-        
-        return self.open_archive(farch, errormsg, page)
-            
-    def open_archive(self, farch, errormsg,page=0):
-        try:
-            if farch is None:
-                raise WrapperIOError(errormsg)
-                
-            imagelist = farch.filter_images()
-            path, name = os.path.split(farch.path)
+            _, name = os.path.split(path)
+            ntitle = '%s - %s' % (name, self.tr("Image Viewer"))
+            self.manager.open_archive(farch, page)
+            self.setWindowTitle(ntitle)
+            return True
 
-            if len(imagelist) == 0:
-                raise WrapperIOError('No images found in "%s"') % name
-                    
-            self.clearBuffers()
-            self.farch = farch
-            self.imagelist = imagelist
-            if page < len(imagelist):
-                self.cur = page
-            else:
-                self.cur = 0
-            scene = self.scene()
-            scene.clear()
-            scene.setSceneRect(0,0,10,10)
-            self.setWindowTitle('%s - %s' % (name, self.tr("Image Viewer")))
-            self.action_queued_image(self.cur,self._mv_start)
-                
         except WrapperIOError as err:
             errormsg = text_type(err) or self.tr("Unknown Error")
             errormsg = cgi.escape(errormsg)
@@ -620,115 +1080,8 @@ QLabel {
             self.label.resize(self.label.sizeHint())
             self.label.show()
             self.labeltimer.start(self.settings.longtimeout)
+            return False
             
-        return errormsg is None
-
-    def prepare_image(self,fileinfo):
-        try:
-            with self.farch.open(fileinfo,'rb') as fin:
-                img = Image.open(fin)
-                width, height = img.size
-                ratio = width/height
-                view_rect = self.viewport().rect()
-                swidth, sheight = view_rect.width(), view_rect.height()
-                move_h = int(swidth*(100-self.settings.overlap)/100)
-                move_v = int(sheight*(100-self.settings.overlap)/100)
-                origsize = width, height
-                
-                cratio, defwidth, defheight = self.scaling_list[0]
-                best_match = abs(math.log(ratio/cratio))
-                for cratio, cwidth, cheight in self.scaling_list[1:]:
-                    cmatch = abs(math.log(ratio/cratio))
-                    if cmatch < best_match:
-                        defwidth = cwidth
-                        defheight = cheight
-                        best_match = cmatch
-                
-                if defwidth > 0:
-                    width_scale = defwidth / width
-                else:
-                    width_scale = float('inf')
-                
-                if defheight > 0:
-                    height_scale = defheight / height
-                else:
-                    height_scale = float('inf')
-                
-                if abs(math.log(height_scale)) < abs(math.log(width_scale)):
-                    scale = height_scale
-                else:
-                    scale = width_scale
-                
-                if scale > (self.settings.maxscale/100):
-                    scale = self.settings.maxscale/100
-                elif scale < (self.settings.minscale/100):
-                    scale = self.settings.minscale/100
-                    
-                width = int(width*scale)
-                height = int(height*scale)
-                
-                requiredperc = self.settings.requiredoverlap/100.0
-                wdiff = width-swidth
-                hdiff = height-sheight
-                if wdiff > 0 and (wdiff%move_h) < requiredperc*swidth:
-                    width = int(swidth+int(wdiff/move_h)*move_h)
-                    height = int(width/ratio)
-                elif hdiff > 0 and (hdiff%move_v) < requiredperc*sheight:
-                    height = int(sheight+int(hdiff/move_v)*move_v)
-                    width  = int(height*ratio)
-                
-                csize = width, height
-                if csize == origsize:
-                    img = img.convert('RGB')
-                elif csize[0] > .5*origsize[0]:
-                    img = img.convert('RGB').resize(csize,Image.ANTIALIAS)
-                else:
-                    img.thumbnail(csize,Image.ANTIALIAS)
-                    img = img.convert('RGB')
-                    
-            img.origsize = origsize
-            err_msg = ''
-        except IOError as err:
-            img, err_msg = None, text_type(err) or 'Unknown Error'
-            
-        return img, err_msg
-            
-        
-    def display_image(self, img, center=None):
-        scene = self.scene()
-        was_empty = len(list(scene.items()))==0
-        scene.clear()
-        center = center or self._mv_start
-        if isinstance(img,Image.Image):
-            w, h = img.size
-            scene.setSceneRect(0,0,w,h)
-            # we need to hold reference to imgQ, or it will crash
-            self.imgQ = ImageQt.ImageQt(img)  
-            self.imgQ.origsize = img.origsize
-            scene.addPixmap(QtGui.QPixmap.fromImage(self.imgQ))
-            self.centerOn(center)
-            
-            for farch in self.auto_writing:
-                self.action_save_current(self.writing.index(farch))
-            
-            if was_empty:
-                self.label.hide()
-                self.action_info()
-                self.labeltimer.start(self.settings.longtimeout)
-            else:
-                self.label.setText("%d/%d" % (self.cur+1,len(self.imagelist)))
-                self.label.resize(self.label.sizeHint())
-                self.label.show()
-                self.labeltimer.start(self.settings.shorttimeout)
-        else:
-            img = cgi.escape(img)
-            text = "%d/%d<br />%s" % (self.cur+1,len(self.imagelist),img)
-            self.imgQ = None
-            self.label.setText(text)
-            self.label.resize(self.label.sizeHint())
-            self.label.show()
-            scene.setSceneRect(0,0,10,10)
-        
     def hide_label(self):
         self.actions['info'].setChecked(QtCore.Qt.Unchecked)
         self.label.hide()
@@ -736,7 +1089,7 @@ QLabel {
         
     def resize_view(self):
         self.resizetimer.stop()
-        self.clearBuffers()
+        self.manager.clearBuffers()
         if self.imagelist:
             self.action_queued_image(self.cur,self._mv_start)
         
@@ -774,6 +1127,7 @@ QLabel {
         for act in self.actions['movement'].actions():
             mv_menu.addAction(act)
         menu.addAction(self.actions['fullscreen'])
+        menu.addAction(self.actions['continuous'])
         menu.addAction(self.actions['minimize'])
         menu.addSeparator()
         menu.addAction(self.actions['webparser'])
@@ -811,83 +1165,30 @@ QLabel {
             super(ImageViewer,self).dropEvent(event)
 
     def mouseDoubleClickEvent(self,e):
-        self.action_next()
+        self.manager.action_next()
         
     def resizeEvent(self,e):
         if e.oldSize().isValid():
             self.resizetimer.start(100)
         super(ImageViewer,self).resizeEvent(e)
         
-    def clearBuffers(self):
-        for worker in itervalues(self.workers):
-            worker.terminate()
-        self.workers.clear()
-        self.buffer.clear()
-        
     def closeEvent(self,e):
         self.save_settings()
-        if self.farch:
-            self.farch.close()
-            
+        self.manager.close()
         for farch in self.writing:
             farch.close()
-        
-        self.clearBuffers()
+
         super(ImageViewer,self).closeEvent(e)
         
-    def action_queued_image(self,pos,center=None):
-        existing = set(self.workers)|set(self.buffer)
-        preloading = set(range(self.cur+1,self.cur+self.settings.preload+1))
-        preloading &= set(range(len(self.imagelist)))
-        loadcandidate = preloading-existing
-        
-        if pos in self.workers and center is None:
-            worker = self.workers.pop(pos)
-            center = center or worker.center
-            if worker.img:
-                self.buffer[pos] = worker.img
-            else:
-                self.buffer[pos] = worker.error
-            
-        if pos not in self.workers and pos not in self.buffer:
-            toload = pos
-        elif loadcandidate:
-            toload = min(loadcandidate)
-        else:
-            toload = None
-            
-        if toload is not None and toload < len(self.imagelist):
-            self.workers[toload] = worker = WorkerThread(self,toload,center)
-            worker.loaded.connect(self.action_queued_image)
-            worker.start()
-        
-        if self.cur in self.workers:
-            loading = ','.join(text_type(p+1) for p in sorted(self.workers))
-            params = self.cur+1, len(self.imagelist), loading
-            text = self.tr('%d/%d<br />Loading %s ...') % params
-            self.label.setText(text)
-            self.label.resize(self.label.sizeHint())
-            self.label.show()
-
-        if pos == self.cur and pos in self.buffer:
-            self.display_image(self.buffer[pos],center)
-            
-        if len(self.buffer) > self.settings.buffernumber:
-            # .25 makes sure images before the current one get removed first
-            # if they have the same distance to the image
-            key = lambda x: abs(self.cur-x+.25)
-            srtpos = sorted(set(self.buffer)-preloading,key=key)
-            for pos in srtpos[self.settings.buffernumber:]:
-                del self.buffer[pos]
-    
     def action_open(self):
         archives = ' '.join('*%s' % ext for ext in ArchiveWrapper.formats)
         dialog = QtGui.QFileDialog(self)
         dialog.setFileMode(dialog.ExistingFile)
         dialog.setNameFilter(self.tr("Archives (%s)") % archives)
         dialog.setViewMode(dialog.Detail)
-        if self.farch:
-            path, name = os.path.split(self.farch.path)
+        infos = self.manager.page_description
+        if 'archpath' in infos:
+            path, name = os.path.split(infos['archpath'])
             dialog.setDirectory(path)
         if dialog.exec_():
             self.load_archive(dialog.selectedFiles()[0])
@@ -898,10 +1199,11 @@ QLabel {
         archives = '*.zip'
         auto_add = False
         fpath = '/'
+        infos = self.manager.page_description
         if self.last_farchinfo is not None:
             fpath, auto_add = self.last_farchinfo
-        elif self.farch:
-            fpath, name = os.path.split(self.farch.path)
+        elif 'archpath' in infos:
+            fpath, name = os.path.split(infos['archpath'])
 
         path, dummy = QtGui.QFileDialog.getSaveFileName(self,
                                                         dir=fpath,
@@ -921,16 +1223,16 @@ QLabel {
                 self.labeltimer.start(self.settings.longtimeout)
 
     def action_save_current(self, archive_ind):
-        if archive_ind >= self.writing:
-            return
-        elif (not self.imagelist) or (self.cur >= len(self.imagelist)):
+        infos = self.manager.page_description
+        if archive_ind >= self.writing or 'filename' not in infos:
             return
         
-        base, filename = os.path.split(self.imagelist[self.cur].filename)
+        base, filename = os.path.split(infos['filename'])
         #remove trailing part seperated by ?
         filename = filename.split('?')[0].strip()
-        img = self.buffer.get(self.cur, None)
+        img = self.manager.get_buffered_image(infos['page'])
         farch = self.writing[archive_ind]
+        
         if isinstance(img, Image.Image) and filename not in farch:
             with farch.open(filename, 'w') as fout:
                 img.save(fout,'jpeg',quality=self.settings.write_quality,
@@ -975,64 +1277,87 @@ QLabel {
         if dialog.exec_():
             osettings = self.settings
             self.settings = dialog.settings
-            self._build_scaling_list()
+            self.manager.set_settings(dialog.settings)
                 
             if osettings.bgcolor != self.settings.bgcolor:
                 self.scene().setBackgroundBrush(self.settings.bgcolor)
-                
-            if osettings.scaling != self.settings.scaling or \
-               osettings.minscale != self.settings.minscale or \
-               osettings.maxscale != self.settings.maxscale or \
-               osettings.overlap != self.settings.overlap or \
-               osettings.requiredoverlap != self.settings.requiredoverlap:
-                self.clearBuffers()
-                if self.imagelist:
-                    self.action_queued_image(self.cur,self._mv_start)
-                
         
     def action_page(self):
-        if self.imagelist:
-            self.pageselect.set_range(self.cur,self.imagelist)
+        manager = self.manager
+        if manager.imagelist:
+            self.pageselect.set_range(manager.page, manager.imagelist)
             if self.pageselect.exec_():
-                self.cur = self.pageselect.value
-                self.action_queued_image(self.cur,self._mv_start)
+                manager.show_page(self.pageselect.value)
+                
+    def action_page_info(self):
+        if not self.actions['info'].isChecked() or self.labeltimer.isActive():
+            infos = self.manager.page_description
+            page = infos['page']
+            page_count = infos['page_count']
+            if infos['error']:
+                error = cgi.escape(infos['error'])
+                infostr = u'%d/%d<br />' % (page+1, page_count, error)
+            else:
+                infostr = u'%d/%d' % (page+1, page_count)
+            self.label.setText(infostr)
+            self.label.resize(self.label.sizeHint())
+            self.label.show()
+            self.labeltimer.start(self.settings.shorttimeout)
+        else:
+            self.label.hide()
+            self.action_info()
+            
+        for farch in self.auto_writing:
+            self.action_save_current(self.writing.index(farch))
         
-    def action_info(self):
-        if self.label.isHidden() and self.imagelist:
-            zi = self.imagelist[self.cur]
-            a_tag = '<br \><a href="%s"><span style="color:white;">%s</span></a>'
-            labelstr = u'%d/%d' % (self.cur+1,len(self.imagelist))
-            if self.imgQ:
-                size = self.imgQ.size()
-                tpl = self.imgQ.origsize + (size.width(), size.height())
-                fmt = u'<br />%d \u2715 %d \u21D2 %d \u2715 %d'
-                labelstr += fmt % tpl
-            if hasattr(zi, 'image_url'):
-                labelstr += a_tag % (zi.image_url, zi.filename)
-            else:
-                labelstr += u'<br />%s' % zi.filename
+    def action_status_info(self):
+        use_to = not self.actions['info'].isChecked() or self.labeltimer.isActive()
+        self.label.hide()
+        self.action_info()
+        if use_to:
+            self.labeltimer.start(self.settings.longtimeout)
 
-            if hasattr(zi, 'page_url'):
-                labelstr += a_tag % (zi.page_url,zi.page_url)
-            else:
-                path, archname = os.path.split(self.farch.path)
-                labelstr += '<br \>%s' % archname
-                
-            if self.workers:
-                loading = ','.join(text_type(p+1) for p in sorted(self.workers))
-                labelstr += '<br \>' + self.tr('Loading %s') % loading
-                
-            self.label.setText(labelstr)
+        for farch in self.auto_writing:
+            self.action_save_current(self.writing.index(farch))
+
+    def action_info(self):
+        a_tag = u'<a href="%s"><span style="color:white;">%s</span></a>'
+
+        if self.label.isHidden() and self.manager:
+            infos = self.manager.status_info
+            labels = [infos['info']]
+            if 'size' in infos and 'origsize' in infos:
+                tpl = infos['origsize'] + infos['size']
+                fmt = u'%d \u2715 %d \u21D2 %d \u2715 %d'
+                labels.append(fmt % tuple(tpl))
+            
+            if 'image_url' in infos:
+                url = cgi.escape(infos['image_url'])
+                filename = cgi.escape(infos['filename'])
+                labels.append(a_tag % (url, filename))
+            elif 'filename' in infos:
+                labels.append(infos['filename'])
+
+            if 'page_url' in infos:
+                url = cgi.escape(infos['page_url'])
+                labels.append(a_tag % (url, url))
+            elif 'archname' in infos:
+                labels.append(cgi.escape(infos['archname']))
+            
+            if 'status' in infos:
+                labels.append(cgi.escape(infos['status']))
+
+            self.label.setText('<br />'.join(labels))
             self.label.resize(self.label.sizeHint())
             self.label.show()
             self.actions['info'].setChecked(QtCore.Qt.Checked)
-        elif self.imagelist:
+        elif self.manager:
             self.actions['info'].setChecked(QtCore.Qt.Unchecked)
             self.label.hide()
         
     def action_movement(self,action):
         action.setChecked(True)
-        self._mv_start, self._mv_end, self._mv_next, self._mv_prev = self.movement[action]
+        self.manager.mover = action.text()
     
     def action_toggle_fullscreen(self):
         if self.isFullScreen():
@@ -1040,22 +1365,29 @@ QLabel {
         else:
             self.showFullScreen()
             
+    def action_toggle_continuous(self):
+        continuous = self.actions['continuous'].isChecked()
+        self.manager.set_settings(self.settings, continuous)
+
     def action_reload(self):
-        if isinstance(self.farch,WebWrapper):
-            path = self.imagelist[self.cur].page_url
-            self.dropping.set_path(path).start()
-            labelstr = u'Loading "%s"' % path
+        infos = self.manager.page_description
+        if 'page_url' in infos:
+            self.dropping.set_path(infos['page_url']).start()
+            labelstr = u'Loading "%s"' % infos['page_url']
             self.label.setText(labelstr)
             self.label.resize(self.label.sizeHint())
             self.label.show()
-        elif self.farch:
-            self.load_archive(self.farch.path,self.cur)
+        elif 'archpath' in infos:
+            page = infos.get('page', None)
+            path = infos['archpath']
+            self.load_archive(path, page)
 
     def action_next_file(self):
         errormsg = ''
-        if self.farch:
-            archlist,loadindex = self.farch.list_archives()
-            folder, name = os.path.split(self.farch.path)
+        farch = self.manager.wrapper
+        if farch:
+            archlist,loadindex = farch.list_archives()
+            folder, name = os.path.split(farch.path)
                 
             loadindex += 1
             while loadindex < len(archlist) and \
@@ -1075,9 +1407,10 @@ QLabel {
     
     def action_prev_file(self):
         errormsg = ''
-        if self.farch:
-            archlist,loadindex = self.farch.list_archives()
-            folder, name = os.path.split(self.farch.path)
+        farch = self.manager.wrapper
+        if farch:
+            archlist,loadindex = farch.list_archives()
+            folder, name = os.path.split(farch.path)
                 
             loadindex -= 1
             while loadindex >= 0 and not self.load_archive(archlist[loadindex]):
@@ -1093,126 +1426,17 @@ QLabel {
             self.label.show()
             self.labeltimer.start(self.settings.longtimeout)
             
-        
-    def action_first_image(self):
-        if self.imagelist:
-            self.cur = 0
-            self.action_queued_image(self.cur,self._mv_start)
-
-    def action_last_image(self):
-        if self.imagelist:
-            self.cur = len(self.imagelist)-1
-            self.action_queued_image(self.cur,self._mv_start)
-            
-    def action_next_image(self):
-        if self.imagelist and (self.cur+1) < len(self.imagelist):
-            self.cur += 1
-            self.action_queued_image(self.cur,self._mv_start)
-        elif self.imagelist:
-            self.label.setText(self.tr("No further images in this archive"))
-            self.label.resize(self.label.sizeHint())
-            self.label.show()
-            self.labeltimer.start(self.settings.longtimeout)
-        
-    def action_prev_image(self):
-        if self.imagelist and self.cur > 0:
-            self.cur -= 1
-            self.action_queued_image(self.cur,self._mv_end)
-        elif self.imagelist:
-            self.label.setText(self.tr("No previous images in this archive"))
-            self.label.resize(self.label.sizeHint())
-            self.label.show()
-            self.labeltimer.start(self.settings.longtimeout)
-            
-    def action_next(self):
-        view_rect = self.viewport().rect()
-        view_rect = self.mapToScene(view_rect).boundingRect()
-        scene_rect = self.sceneRect()
-        move_h = int(view_rect.width()*(100-self.settings.overlap)/100)
-        move_v = int(view_rect.height()*(100-self.settings.overlap)/100)
-        
-        step = self._mv_next(scene_rect,view_rect,move_h,move_v)
-        if step:
-            self.centerOn(view_rect.center()+step)
-        else:
-            self.action_next_image()
-
-    def action_prev(self):
-        view_rect = self.viewport().rect()
-        view_rect = self.mapToScene(view_rect).boundingRect()
-        scene_rect = self.sceneRect()
-        move_h = int(view_rect.width()*(100-self.settings.overlap)/100)
-        move_v = int(view_rect.height()*(100-self.settings.overlap)/100)
-        step = self._mv_prev(scene_rect,view_rect,move_h,move_v)
-        if step:
-            self.centerOn(view_rect.center()+step)
-        else:
-            self.action_prev_image()
-            
-    @staticmethod
-    def move_down_right(scene,view,dx,dy):
-        if scene.bottom() > view.bottom():
-            return QtCore.QPointF(0.0,dy)
-        elif scene.right() > view.right():
-            return QtCore.QPointF(dx,-INF_POINT)
-
-    @staticmethod
-    def move_down_left(scene,view,dx,dy):
-        if scene.bottom() > view.bottom():
-            return QtCore.QPointF(0.0,dy)
-        elif scene.left() < view.left():
-            return QtCore.QPointF(-dx,-INF_POINT)
-
-    @staticmethod
-    def move_right_down(scene,view,dx,dy):
-        if scene.right() > view.right():
-            return QtCore.QPointF(dx,0.0)
-        elif scene.bottom() > view.bottom():
-            return QtCore.QPointF(-INF_POINT,dy)
-
-    @staticmethod
-    def move_left_down(scene,view,dx,dy):
-        if scene.left() < view.left():
-            return QtCore.QPointF(-dx,0.0)
-        elif scene.bottom() > view.bottom():
-            return QtCore.QPointF(INF_POINT,dy)
-
-    @staticmethod
-    def move_up_left(scene,view,dx,dy):
-        if scene.top() < view.top():
-            return QtCore.QPointF(0.0,-dy)
-        elif scene.left() < view.left():
-            return QtCore.QPointF(-dx,INF_POINT)
- 
-    @staticmethod
-    def move_up_right(scene,view,dx,dy):
-        if scene.top() < view.top():
-            return QtCore.QPointF(0.0,-dy)
-        elif scene.right() > view.right():
-            return QtCore.QPointF(dx,INF_POINT)
-            
-    @staticmethod
-    def move_left_up(scene,view,dx,dy):
-        if scene.left() < view.left():
-            return QtCore.QPointF(-dx,0.0)
-        elif scene.top() < view.top():
-            return QtCore.QPointF(INF_POINT,-dy)
-
-    @staticmethod
-    def move_right_up(scene,view,dx,dy):
-        if scene.right() > view.right():
-            return QtCore.QPointF(dx,0.0)
-        elif scene.top() < view.top():
-            return QtCore.QPointF(-INF_POINT,-dy)
-
     def save_settings(self):
+        isContinuous = self.actions['continuous'].isChecked()
+        
         settings = QtCore.QSettings("Caasar", "Image Viewer")
         settings.beginGroup("MainWindow")
         settings.setValue("fullscreen", self.isFullScreen())
+        settings.setValue("continuous", isContinuous)
         if not self.isFullScreen():
             settings.setValue("pos", self.pos())
             settings.setValue("size", self.size())
-        settings.setValue("movement", self._mv_next.__name__)
+        settings.setValue("movement", self.manager.mover)
         settings.endGroup()        
         settings.beginGroup("Settings")
         csettings = self.settings._asdict()
@@ -1225,15 +1449,15 @@ QLabel {
             settings.setValue(key,values)
         settings.endGroup()        
 
-        if self.settings.saveposition and self.imagelist:
+        if self.settings.saveposition and self.manager:
+            infos = self.manager.page_description
             settings.beginGroup("History")
-            if isinstance(self.farch,WebWrapper):
-                fileinfo = self.imagelist[self.cur]
-                settings.setValue("lastpath", fileinfo.page_url)
+            if 'page_url' in infos:
+                settings.setValue("lastpath", infos['page_url'])
                 settings.setValue("lastpage", 0)
             else:
-                settings.setValue("lastpath", self.farch.path)
-                settings.setValue("lastpage", self.cur)
+                settings.setValue("lastpath", infos['archpath'])
+                settings.setValue("lastpage", infos['page'])
             settings.endGroup()
         
     def load_settings(self):
@@ -1242,7 +1466,11 @@ QLabel {
         self.resize(settings.value("size",QtCore.QSize(640, 480)))
         self.move(settings.value("pos", QtCore.QPoint(100, 100)))
         isFullscreen = settings.value("fullscreen", 'false') == 'true'
-        movement = settings.value("movement", 'move_right_down')
+        isContinuous = settings.value("continuous", 'false') == 'true'
+        self.manager.mover = settings.value("movement", "")
+        for act in self.actions['movement'].actions():
+            if act.text() == self.manager.mover:
+                act.setChecked(True)
         settings.endGroup()        
         settings.beginGroup("Settings")
         csettings = self.settings._asdict()
@@ -1252,15 +1480,10 @@ QLabel {
                 value = type(defvalue)(value)
             csettings[key] = value
         self.settings = Settings.dict2tuple(csettings)
-        self._build_scaling_list()
+        self.manager.set_settings(self.settings, isContinuous)
         settings.endGroup()
 
         self.scene().setBackgroundBrush(self.settings.bgcolor)
-        
-        for key,(s,e,n,p) in iteritems(self.movement):
-            if n.__name__ == movement:
-                self.action_movement(key)
-                break
         
         settings.beginGroup("WebProfiles")
         for profile in settings.childKeys():
@@ -1268,30 +1491,21 @@ QLabel {
             prof = dict(zip(WebWrapper.profile_keys, values))
             if len(values) == len(WebWrapper.profile_keys):
                 WebWrapper.profiles[profile] = prof
-        settings.endGroup()        
+        settings.endGroup()
 
         if self.settings.saveposition:
             settings.beginGroup("History")
             path = settings.value("lastpath",'')
-            pos = settings.value("lastpage",0)
+            page = settings.value("lastpage", 0) or 0
             if path:
-                self.load_archive(path,pos)
+                self.load_archive(path, page)
             
         if isFullscreen:
             self.actions['fullscreen'].setChecked(QtCore.Qt.Checked)
+        if isContinuous:
+            self.actions['continuous'].setChecked(QtCore.Qt.Checked)
         return isFullscreen
         
-    def _build_scaling_list(self):
-        scaling_list = []
-        for line in self.settings.scaling.split('\n'):
-            line = line.strip()
-            match = self.re_scaling.match(line)
-            if match:
-                iw, ih, w, h = match.groups()
-                nscaling = self.Scaling(float(iw)/float(ih), int(w), int(h))
-                scaling_list.append(nscaling)
-        self.scaling_list = sorted(scaling_list)
-    
 
 if __name__ == "__main__":
     app = QtGui.QApplication(sys.argv[:1])
