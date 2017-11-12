@@ -14,7 +14,6 @@ except ImportError:
     
 import os,re,cgi
 import math
-#import htmllib,formatter
 from ast import literal_eval
 from six import text_type, itervalues, iteritems
 from functools import partial
@@ -23,11 +22,10 @@ from wrapper import KNOWN_ARCHIVES, WrapperIOError
 from wrapper.archive import ArchiveWrapper
 from wrapper.pdf import PdfWrapper
 from wrapper.web import WebWrapper
-#from six.moves import cStringIO as StringIO
 import PIL.Image as Image
 import PIL.ImageQt as ImageQt
 
-INF_POINT = 100000
+INF_POINT = 1000000000
 
 def open_wrapper(path):
     """
@@ -86,7 +84,8 @@ class WebProfileSettings(QtGui.QDialog):
         layout.addRow(self.tr("&Next url filter:"),next_url)
         
         if 'bs4' not in sys.modules:
-            label = QtGui.QLabel(self.tr("Could not load BeautifulSoup4. Only defaut webparser available."))
+            label = QtGui.QLabel(self.tr("Could not load BeautifulSoup4. "\
+                                         "'Only defaut webparser available."))
             label.setStyleSheet("QLabel { color : red; }")
             profile.setDisabled(True)
             page_url.setDisabled(True)
@@ -244,9 +243,9 @@ class Settings(QtGui.QDialog):
             self.saveposition.setCheckState(QtCore.Qt.Checked)
             
         self.bgcolor = settings.bgcolor or QtGui.QColor(QtCore.Qt.white)
-        style = "QPushButton { background-color : rgba(%d,%d,%d,%d)}" % self.bgcolor.getRgb()
+        fmt = "QPushButton { background-color : rgba(%d,%d,%d,%d)}"
+        style = fmt % self.bgcolor.getRgb()
         self.bgcolor_btm.setStyleSheet(style)
-
         
     def accept(self):
         settings = {}
@@ -267,7 +266,8 @@ class Settings(QtGui.QDialog):
         
     def select_color(self):
         self.bgcolor = QtGui.QColorDialog.getColor(self.bgcolor,self)
-        style = "QPushButton { background-color : rgb(%d,%d,%d,%d)}" % self.bgcolor.getRgb()
+        fmt = "QPushButton { background-color : rgba(%d,%d,%d,%d)}"
+        style = fmt % self.bgcolor.getRgb()
         self.bgcolor_btm.setStyleSheet(style)
         
     @classmethod
@@ -333,7 +333,8 @@ class PageSelect(QtGui.QDialog):
             
             metric = QtGui.QFontMetrics(self.label.font())
             text = self.imagelist[value-1].filename
-            elided = metric.elidedText(text,QtCore.Qt.ElideLeft, self.label.width())
+            elided = metric.elidedText(text,QtCore.Qt.ElideLeft, 
+                                       self.label.width())
             self.label.setText(elided)
         except ValueError:
             pass
@@ -351,7 +352,8 @@ class WorkerThread(QtCore.QThread):
         self.center = center
         self.error = ''
         self.img = None
-        self.finished.connect(self.removeParent) # necessary to remove handle in viewer
+        # necessary to remove handle in viewer
+        self.finished.connect(self.removeParent) 
         
     def run(self):
         self.img, self.error = self.viewer.prepare_image(self.fileinfo)
@@ -415,7 +417,8 @@ QLabel {
         self.dropping = DroppingThread(self)
         self.dropping.loaded_archive.connect(self.load_dropped_archive)
  
-        self.label = QtGui.QLabel(self.tr('Nothing to show<br \>Open an image archive'),self)
+        self.label = QtGui.QLabel(self.tr('Nothing to show<br \>'\
+                                          'Open an image archive'), self)
         self.label.setStyleSheet(self.label_css)
         self.label.setOpenExternalLinks(True)
         self.label.setTextFormat(QtCore.Qt.RichText)
@@ -524,7 +527,8 @@ QLabel {
                       shortcut=QtGui.QKeySequence(ckey),
                       triggered=partial(self.action_save_current, i-1))
             actions['append_to_%d' % i] = caction
-            caction = QtGui.QAction(self.tr("Automatically append current image"), self,
+            caction = QtGui.QAction(self.tr("Automatically append current image"), 
+                      self,
                       checkable=True,
                       triggered=partial(self.action_save_auto, i-1))
             actions['auto_%d' % i] = caction
@@ -683,7 +687,7 @@ QLabel {
             img.origsize = origsize
             err_msg = ''
         except IOError as err:
-            img, err_msg = None, text_type(err) or 'Unkown Error'
+            img, err_msg = None, text_type(err) or 'Unknown Error'
             
         return img, err_msg
             
@@ -696,7 +700,8 @@ QLabel {
         if isinstance(img,Image.Image):
             w, h = img.size
             scene.setSceneRect(0,0,w,h)
-            self.imgQ = ImageQt.ImageQt(img)  # we need to hold reference to imgQ, or it will crash
+            # we need to hold reference to imgQ, or it will crash
+            self.imgQ = ImageQt.ImageQt(img)  
             self.imgQ.origsize = img.origsize
             scene.addPixmap(QtGui.QPixmap.fromImage(self.imgQ))
             self.centerOn(center)
