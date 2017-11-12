@@ -50,6 +50,9 @@ def pull(*args):
 class ArchiveIOError(IOError):
     pass
 
+class BaseFileInfo(object):
+    def __init__(self, filename):
+        self.filename = filename
 
 class BaseWrapper(object):
     formats = KNOWN_ARCHIVES
@@ -113,6 +116,24 @@ class BaseWrapper(object):
                 
         return archlist,index
     
+    @classmethod
+    def folderlist(cls, path,base='',recursive=True):
+        filelist = []
+        try:
+            dirlist = os.listdir(path)
+        except:
+            dirlist = []
+            
+        for f in dirlist:
+            fullpath = os.path.join(path,f)
+            filename = os.path.join(base,f)
+            if os.path.isfile(fullpath):
+                filelist.append(BaseFileInfo(filename))
+            elif os.path.isdir(fullpath) and recursive:
+                filelist.extend(cls.folderlist(fullpath,filename))
+                
+        return filelist
+
     @staticmethod        
     def split_filename(fileinfo):
         """
@@ -136,4 +157,3 @@ class BaseWrapper(object):
         
     def __contains__(self, filename):
         return filename in (fi.filename for fi in self.filelist)
-

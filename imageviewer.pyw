@@ -620,6 +620,8 @@ QLabel {
             self.label.resize(self.label.sizeHint())
             self.label.show()
             self.labeltimer.start(self.settings.longtimeout)
+            
+        return errormsg is None
 
     def prepare_image(self,fileinfo):
         try:
@@ -1058,7 +1060,7 @@ QLabel {
             loadindex += 1
             while loadindex < len(archlist) and \
               not self.load_archive(archlist[loadindex]):
-                loadindex += 1  
+                loadindex += 1
                     
             if loadindex >= len(archlist):
                 errormsg = self.tr('No further archives in "%s"') % folder 
