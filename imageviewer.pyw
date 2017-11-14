@@ -415,7 +415,10 @@ class ImageManager(object):
         self._images = dict()
         self._errors = dict()
         self._continuous = False
-        self._initialized = False
+        self._last_page = None
+        self._booktimer = QtCore.QTimer(viewer)
+        self._booktimer.timeout.connect(self._update_bookkeeping)
+        self._booktimer.setSingleShot(True)
         
         self._movers = dict((m.name, m) for m in movers)
         self._mover = None
@@ -425,6 +428,11 @@ class ImageManager(object):
         self.mover = self.movers[0]
         self.settings = settings
         self.set_settings(settings)
+        
+        viewer.horizontalScrollBar().valueChanged.connect(self._view_changed)
+        viewer.horizontalScrollBar().rangeChanged.connect(self._view_changed)
+        viewer.verticalScrollBar().valueChanged.connect(self._view_changed)
+        viewer.verticalScrollBar().rangeChanged.connect(self._view_changed)
         
     def show_page(self, page, anchor='Start'):
         """
@@ -449,12 +457,6 @@ class ImageManager(object):
             else:
                 view_rect = self._mover.first_view(item)
             self.viewer.centerOn(view_rect.center())
-            if self._initialized:
-                self.viewer.show_page_info.emit()
-            else:
-                self._initialized = True
-                self.viewer.show_status_info.emit()
-            self._update_bookkeeping()
         elif page >= 0 and page < self.page_count:
             self._to_show = page
             self._load_page(page)
@@ -486,14 +488,11 @@ class ImageManager(object):
         imagelist = wrapper.filter_images()
         path, name = os.path.split(wrapper.path)
 
-        scene = self.viewer.scene()
-        scene.clear()
-        scene.setSceneRect(0,0,0,0)
-
         if len(imagelist) == 0:
             raise WrapperIOError('No images found in "%s"') % name
-                
-        self.clearBuffers()
+            
+        # close old wrapper if one is opened
+        self.close()
         self.wrapper = wrapper
         self.imagelist = imagelist
         self.rectlist = [None for zi in self.imagelist]
@@ -527,6 +526,7 @@ class ImageManager(object):
         
     def close(self):
         self.clearBuffers()
+        self._last_page = None
         if self.wrapper is not None:
             self.wrapper.close()
             self.wrapper = None
@@ -540,7 +540,6 @@ class ImageManager(object):
         self._images = dict()
         self._errors = dict()
         self._to_show = None
-        self._initialized = False
         
     def get_buffered_image(self, page):
         """
@@ -570,24 +569,16 @@ class ImageManager(object):
             self.action_first_image()
             
     def action_next(self):
-        prev_page = self.page
         next_view, changed = self._mover.next_view(self.settings.overlap)
         self.viewer.centerOn(next_view.center())
         if not changed and not self._continuous:
             self.action_next_image()
-        elif prev_page != self.page:
-            self.viewer.show_page_info.emit()
-            self._update_bookkeeping()
 
     def action_prev(self):
-        prev_page = self.page
         next_view, changed = self._mover.prev_view(self.settings.overlap)
         self.viewer.centerOn(next_view.center())
         if not changed and not self._continuous:
             self.action_prev_image()
-        elif prev_page != self.page:
-            self.viewer.show_page_info.emit()
-            self._update_bookkeeping()
             
     @property
     def movers(self):
@@ -667,6 +658,9 @@ class ImageManager(object):
     @property
     def path(self):
         return self.wrapper.path if self.wrapper is not None else ''
+        
+    def _view_changed(self):
+        self._booktimer.start(100)
 
     def _get_pixmap(self, page):
         for item in self.viewer.scene().items():
@@ -799,13 +793,15 @@ class ImageManager(object):
             self._update_bookkeeping()
         
     def _update_bookkeeping(self):
-        vis_page = self._to_show or self.page or 0
+        vis_page = self._to_show or self.page
+        if vis_page is None:
+            return
+            
         loaded_pages = self.loaded_pages
         existing = set(loaded_pages) | set(self.workers)
         preloading = set(range(vis_page+1, vis_page+self.settings.preload+1))
         preloading &= set(range(self.page_count))
         loadcandidate = preloading-existing
-
 
         if loadcandidate:
             self._load_page(min(loadcandidate))
@@ -823,6 +819,12 @@ class ImageManager(object):
 
             self._reoder_items()
         
+        if self._last_page is None:
+            self.viewer.show_status_info.emit()
+        elif self._last_page != vis_page:
+            self.viewer.show_page_info.emit()
+        self._last_page = vis_page
+            
     def _reoder_items(self):
         scene = self.viewer.scene()
         view_rect = self.viewer.viewport().rect()
