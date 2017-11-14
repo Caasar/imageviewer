@@ -449,7 +449,6 @@ class ImageManager(object):
             else:
                 view_rect = self._mover.first_view(item)
             self.viewer.centerOn(view_rect.center())
-            print(page, self._initialized)
             if self._initialized:
                 self.viewer.show_page_info.emit()
             else:
@@ -1230,6 +1229,8 @@ QLabel {
         base, filename = os.path.split(infos['filename'])
         #remove trailing part seperated by ?
         filename = filename.split('?')[0].strip()
+        #prepend the page number to ensure correct ordering of images
+        filename = u'%.3d_%s' % (infos['page'], filename)
         img = self.manager.get_buffered_image(infos['page'])
         farch = self.writing[archive_ind]
         
@@ -1238,7 +1239,7 @@ QLabel {
                 img.save(fout,'jpeg',quality=self.settings.write_quality,
                                      optimize=self.settings.write_optimize,
                                      progressive=self.settings.write_progressive)
-            self.label.setText('Save %r to %r' % (filename, farch.path))
+            self.label.setText('Save "%s" to "%s"' % (filename, farch.path))
             self.label.resize(self.label.sizeHint())
             self.label.show()
             self.labeltimer.start(self.settings.longtimeout)
