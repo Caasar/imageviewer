@@ -290,6 +290,9 @@ class WebWrapper(BaseWrapper):
                 
         reraise(*sys.exc_info())
         
+    def close(self):
+        pass
+        
     def list_archives(self):
         return [], 0
         
