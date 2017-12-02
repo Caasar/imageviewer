@@ -414,7 +414,6 @@ class ImageManager(object):
         self.imagelist = []
         self._images = dict()
         self._errors = dict()
-        self._continuous = False
         self._last_page = None
         self._booktimer = QtCore.QTimer(viewer)
         self._booktimer.timeout.connect(self._update_bookkeeping)
@@ -462,7 +461,7 @@ class ImageManager(object):
             self._load_page(page)
             
     def set_settings(self, settings, continuous=False):
-        refresh = continuous != self._continuous or \
+        refresh = continuous != self._mover.continuous or \
                   settings.scaling != self.settings.scaling or \
                   settings.minscale != self.settings.minscale or \
                   settings.maxscale != self.settings.maxscale or \
@@ -480,7 +479,7 @@ class ImageManager(object):
         
         self.settings = settings
         self.scaling_list = sorted(scaling_list)
-        self._continuous = continuous
+        self._mover.continuous = continuous
         if refresh:
             self.refresh()
         
@@ -571,13 +570,13 @@ class ImageManager(object):
     def action_next(self):
         next_view, changed = self._mover.next_view(self.settings.overlap)
         self.viewer.centerOn(next_view.center())
-        if not changed and not self._continuous:
+        if not changed and not self._mover.continuous:
             self.action_next_image()
 
     def action_prev(self):
         next_view, changed = self._mover.prev_view(self.settings.overlap)
         self.viewer.centerOn(next_view.center())
-        if not changed and not self._continuous:
+        if not changed and not self._mover.continuous:
             self.action_prev_image()
             
     @property
@@ -697,9 +696,15 @@ class ImageManager(object):
         move_v = int(sheight*(100-self.settings.overlap)/100)
         origsize = width, height
         
-        cratio, defwidth, defheight = self.scaling_list[0]
-        best_match = abs(math.log(ratio/cratio))
-        for cratio, cwidth, cheight in self.scaling_list[1:]:
+        defwidth, defheight = 0, 0
+        best_match = float('inf')
+        for cratio, cwidth, cheight in self.scaling_list:
+            # do not use all scallings in continues viewer mode
+            if cheight == 0 and self._mover.continuous_width:
+                continue
+            elif cwidth == 0 and self._mover.continuous_height:
+                continue
+
             cmatch = abs(math.log(ratio/cratio))
             if cmatch < best_match:
                 defwidth = cwidth
@@ -729,7 +734,7 @@ class ImageManager(object):
         width = int(width*scale)
         height = int(height*scale)
         
-        if not self._continuous:        
+        if not self._mover.continuous:        
             requiredperc = self.settings.requiredoverlap/100.0
             wdiff = width-swidth
             hdiff = height-sheight
@@ -841,7 +846,7 @@ class ImageManager(object):
         # show all pages directly connected to the currently page in focues
         pages = sorted(items)
         show_pages = {view_page}
-        if self._continuous:
+        if self._mover.continuous:
             try:
                 view_pos = pages.index(view_page)
             except ValueError:

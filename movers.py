@@ -18,6 +18,7 @@ class BaseMover(object):
     def __init__(self, viewer, name):
         self.viewer = viewer
         self.name = name
+        self._continuous = False
     
     def step_sizes(self, overlap):
         """
@@ -63,6 +64,22 @@ class BaseMover(object):
         raise NotImplementedError()
         
     def last_view(self, item):
+        raise NotImplementedError()
+        
+    @property
+    def continuous(self):
+        return self._continuous
+        
+    @continuous.setter
+    def continuous(self, continuous):
+        self._continuous = continuous
+
+    @property
+    def continuous_height(self):
+        raise NotImplementedError()
+    
+    @property
+    def continuous_width(self):
         raise NotImplementedError()
 
     @classmethod
@@ -116,6 +133,14 @@ class DownLeftMover(BaseMover):
         view.moveBottomLeft(item_rect.bottomLeft())
         return view
 
+    @property
+    def continuous_height(self):
+        return False
+    
+    @property
+    def continuous_width(self):
+        return self._continuous
+
 
 class DownRightMover(BaseMover):
     def __init__(self, viewer):
@@ -154,6 +179,14 @@ class DownRightMover(BaseMover):
         dx, dy, view, scene = self.step_sizes(0)
         view.moveBottomRight(item_rect.bottomRight())
         return view
+
+    @property
+    def continuous_height(self):
+        return False
+    
+    @property
+    def continuous_width(self):
+        return self._continuous
 
 
 class RightDownMover(BaseMover):
@@ -194,6 +227,14 @@ class RightDownMover(BaseMover):
         view.moveBottomRight(item_rect.bottomRight())
         return view
 
+    @property
+    def continuous_height(self):
+        return self._continuous
+    
+    @property
+    def continuous_width(self):
+        return False
+
 
 class LeftDownMover(BaseMover):
     def __init__(self, viewer):
@@ -233,6 +274,14 @@ class LeftDownMover(BaseMover):
         dx, dy, view, scene = self.step_sizes(0)
         view.moveBottomLeft(item_rect.bottomLeft())
         return view
+
+    @property
+    def continuous_height(self):
+        return self._continuous
+    
+    @property
+    def continuous_width(self):
+        return False
 
 
 def known_movers():
