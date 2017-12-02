@@ -9,6 +9,7 @@ import sys
 import os
 import re
 import gzip
+import socket
 from io import BytesIO
 from six import text_type, reraise
 from six.moves.html_parser import HTMLParser, HTMLParseError
@@ -88,6 +89,8 @@ class WebIO(BytesIO):
         except URLError as err:
             raise WebIOError(str(err))
         except ValueError as err:
+            raise WebIOError(str(err))
+        except socket.error as err:
             raise WebIOError(str(err))
 
         BytesIO.__init__(self,raw)
