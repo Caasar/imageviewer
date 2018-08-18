@@ -4,18 +4,19 @@ from __future__ import division, print_function
 
 import sys
 
-try: 
+try:
     import PySide
     sys.modules['PyQt4'] = PySide # HACK for ImageQt
     from PySide import QtCore, QtGui
 except ImportError:
     from PyQt4 import QtCore, QtGui
     QtCore.Signal = QtCore.pyqtSignal
-    
+
 import os,re,cgi
 import math
 from ast import literal_eval
 from six import text_type, itervalues, iteritems
+from six.moves import range
 from functools import partial
 from collections import namedtuple
 from wrapper import KNOWN_ARCHIVES, WrapperIOError
@@ -37,9 +38,9 @@ def open_wrapper(path):
         farch = PdfWrapper(path)
     else:
         farch = ArchiveWrapper(path,'r')
-    
+
     return farch
-    
+
 
 class WebProfileSettings(QtGui.QDialog):
     def __init__(self, *args):
@@ -61,7 +62,7 @@ class WebProfileSettings(QtGui.QDialog):
         page_url.editingFinished.connect(self.update_profile)
         img_url.editingFinished.connect(self.update_profile)
         next_url.editingFinished.connect(self.update_profile)
-        
+
         page_url.setToolTip(self.tr("A regular expresion."))
         img_url.setToolTip(self.tr("CSS Selector for image element."))
         next_url.setToolTip(self.tr("CSS Selector for next page link."))
@@ -70,7 +71,7 @@ class WebProfileSettings(QtGui.QDialog):
         cancel_btn.clicked.connect(self.reject)
         ok_btn = QtGui.QPushButton(self.tr("&OK"),self)
         ok_btn.clicked.connect(self.accept)
-        
+
         hbox = QtGui.QHBoxLayout()
         hbox.addStretch()
         hbox.addWidget(ok_btn)
@@ -81,7 +82,7 @@ class WebProfileSettings(QtGui.QDialog):
         layout.addRow(self.tr("&Url:"),page_url)
         layout.addRow(self.tr("&Image filter:"),img_url)
         layout.addRow(self.tr("&Next url filter:"),next_url)
-        
+
         if 'bs4' not in sys.modules:
             label = QtGui.QLabel(self.tr("Could not load BeautifulSoup4. "\
                                          "'Only defaut webparser available."))
@@ -91,7 +92,7 @@ class WebProfileSettings(QtGui.QDialog):
             img_url.setDisabled(True)
             next_url.setDisabled(True)
             layout.addRow(label)
-        
+
         layout.addRow(hbox)
 
         self.setLayout(layout)
@@ -101,7 +102,7 @@ class WebProfileSettings(QtGui.QDialog):
         self.next_url = next_url
         self.profiles = dict(WebWrapper.profiles)
         self.load_profile(0)
-        
+
         self.setTabOrder(profile,page_url)
         self.setTabOrder(page_url,img_url)
         self.setTabOrder(img_url,next_url)
@@ -112,10 +113,10 @@ class WebProfileSettings(QtGui.QDialog):
         profile = self.profile.currentText()
         prof = self.profiles.get(profile,None)
         if prof:
-            self.page_url.setText(prof['url']) 
-            self.img_url.setText(prof['img']) 
-            self.next_url.setText(prof['next']) 
-        
+            self.page_url.setText(prof['url'])
+            self.img_url.setText(prof['img'])
+            self.next_url.setText(prof['next'])
+
     def update_profile(self):
         profile = self.profile.currentText()
         if profile:
@@ -123,14 +124,14 @@ class WebProfileSettings(QtGui.QDialog):
             prof['url'] = self.page_url.text()
             prof['img'] = self.img_url.text()
             prof['next'] = self.next_url.text()
-        
+
     def accept(self):
         for key, prof in self.profiles.items():
             WebWrapper.profiles.pop(key, None)
             if prof['url'] or prof['img'] or prof['next']:
                 WebWrapper.profiles[key] = prof
         super(WebProfileSettings,self).accept()
-        
+
 
 class Settings(QtGui.QDialog):
     settings = {'shorttimeout':1000,'longtimeout':2000, 'requiredoverlap':50,
@@ -138,16 +139,19 @@ class Settings(QtGui.QDialog):
                 'bgcolor': QtGui.QColor(QtCore.Qt.white),
                 'saveposition':0,'overlap':20,'maxscale':200,
                 'minscale':20, 'write_quality': 80, 'write_optimize':1,
-                'write_progressive':1, 'scaling':'1000x1600=>0x1600'}
+                'write_progressive':1,
+                'merge_threshold':50,
+                'scaling':'1000x1600=>0x1600\n1000x2200=>900x0'}
     Tuple = namedtuple('Settings', settings.keys())
     settings = Tuple(**settings)
-    
+
     def __init__(self, settings, parent=None):
         super(Settings,self).__init__(parent)
         self.setWindowModality(QtCore.Qt.ApplicationModal)
         self.setWindowFlags(QtCore.Qt.Dialog|QtCore.Qt.FramelessWindowHint)
         #self.resize(640, 80)
-        
+
+        self.mergethreshold = QtGui.QLineEdit(self)
         self.preload = QtGui.QLineEdit(self)
         self.buffernumber = QtGui.QLineEdit(self)
         self.scaling = QtGui.QTextEdit(self)
@@ -159,6 +163,7 @@ class Settings(QtGui.QDialog):
         self.overlap = QtGui.QLineEdit(self)
         self.saveposition = QtGui.QCheckBox(self.tr("S&ave Position"),self)
 
+        self.mergethreshold.setValidator(QtGui.QIntValidator())
         self.preload.setValidator(QtGui.QIntValidator())
         self.buffernumber.setValidator(QtGui.QIntValidator())
         self.shorttimeout.setValidator(QtGui.QIntValidator())
@@ -168,6 +173,8 @@ class Settings(QtGui.QDialog):
         self.requiredoverlap.setValidator(QtGui.QIntValidator())
         self.overlap.setValidator(QtGui.QIntValidator())
 
+        self.mergethreshold.setToolTip(self.tr("Defines the maximal pixel "\
+             "under which images are merged to remove diplicate sections"))
         self.preload.setToolTip(self.tr("Defines how many images after the "\
              "current one will be loaded in the background."))
         self.buffernumber.setToolTip(self.tr("Defines how many images will be "\
@@ -187,7 +194,7 @@ class Settings(QtGui.QDialog):
              "part is visible after advancing to the next one."))
         self.saveposition.setToolTip(self.tr("Save the position in the archive"\
              " on exit and loads it at the next start"))
-        
+
         self.cancelbuttom = QtGui.QPushButton(self.tr("Cancel"),self)
         self.cancelbuttom.clicked.connect(self.reject)
         self.okbuttom = QtGui.QPushButton(self.tr("OK"),self)
@@ -198,7 +205,8 @@ class Settings(QtGui.QDialog):
         self.setTabOrder(self.saveposition,self.scaling)
         self.setTabOrder(self.scaling,self.minscale)
         self.setTabOrder(self.minscale,self.maxscale)
-        self.setTabOrder(self.maxscale,self.overlap)
+        self.setTabOrder(self.maxscale,self.mergethreshold)
+        self.setTabOrder(self.mergethreshold,self.overlap)
         self.setTabOrder(self.overlap,self.requiredoverlap)
         self.setTabOrder(self.requiredoverlap,self.preload)
         self.setTabOrder(self.preload,self.buffernumber)
@@ -218,6 +226,7 @@ class Settings(QtGui.QDialog):
         layout.addRow(self.tr("Scalin&g:"),self.scaling)
         layout.addRow(self.tr("M&in. Scale (%):"),self.minscale)
         layout.addRow(self.tr("M&an. Scale (%):"),self.maxscale)
+        layout.addRow(self.tr("Merge &Threshold:"),self.mergethreshold)
         layout.addRow(self.tr("Movement &Overlap (%):"),self.overlap)
         layout.addRow(self.tr("&Optimzed Overlap (%):"),self.requiredoverlap)
         layout.addRow(self.tr("&Preload Number:"),self.preload)
@@ -228,7 +237,8 @@ class Settings(QtGui.QDialog):
         layout.addRow(hbox)
 
         self.setLayout(layout)
-        
+
+        self.mergethreshold.setText(text_type(settings.merge_threshold))
         self.preload.setText(text_type(settings.preload))
         self.buffernumber.setText(text_type(settings.buffernumber))
         self.scaling.setText(text_type(settings.scaling))
@@ -240,14 +250,15 @@ class Settings(QtGui.QDialog):
         self.requiredoverlap.setText(text_type(settings.requiredoverlap))
         if settings.saveposition:
             self.saveposition.setCheckState(QtCore.Qt.Checked)
-            
+
         self.bgcolor = settings.bgcolor or QtGui.QColor(QtCore.Qt.white)
         fmt = "QPushButton { background-color : rgba(%d,%d,%d,%d)}"
         style = fmt % self.bgcolor.getRgb()
         self.bgcolor_btm.setStyleSheet(style)
-        
+
     def accept(self):
         settings = {}
+        settings['merge_threshold'] = int(self.mergethreshold.text())
         settings['preload'] = int(self.preload.text())
         settings['buffernumber'] = int(self.buffernumber.text())
         settings['scaling'] = text_type(self.scaling.toPlainText())
@@ -262,13 +273,13 @@ class Settings(QtGui.QDialog):
         settings['bgcolor'] = self.bgcolor
         self.settings = self.dict2tuple(settings)
         super(Settings,self).accept()
-        
+
     def select_color(self):
         self.bgcolor = QtGui.QColorDialog.getColor(self.bgcolor,self)
         fmt = "QPushButton { background-color : rgba(%d,%d,%d,%d)}"
         style = fmt % self.bgcolor.getRgb()
         self.bgcolor_btm.setStyleSheet(style)
-        
+
     @classmethod
     def dict2tuple(cls, settings):
         cdict = cls.settings._asdict()
@@ -282,7 +293,7 @@ class PageSelect(QtGui.QDialog):
         self.setWindowFlags(QtCore.Qt.Dialog|QtCore.Qt.FramelessWindowHint)
         self.resize(640, 80)
         self.imagelist = []
-        
+
         self.page = QtGui.QLineEdit(self)
         self.page.setMaximumWidth(50)
         self.page.setValidator(QtGui.QIntValidator())
@@ -303,25 +314,25 @@ class PageSelect(QtGui.QDialog):
         layout = QtGui.QHBoxLayout()
         layout.addWidget(self.slider)
         layout.addWidget(self.page)
-        
+
         mlayout = QtGui.QGridLayout()
         mlayout.setVerticalSpacing(0)
         mlayout.addLayout(layout,0,0)
         mlayout.addWidget(self.okbuttom,0,1)
         mlayout.addWidget(self.label,1,0)
         mlayout.addWidget(self.cancelbuttom,1,1)
-        
+
         self.setTabOrder(self.slider,self.page)
         self.setTabOrder(self.page,self.okbuttom)
         self.setTabOrder(self.okbuttom,self.cancelbuttom)
-        
+
         self.setLayout(mlayout)
-        
+
     def set_range(self,cur,imagelist):
         self.imagelist = imagelist
         self.slider.setMaximum(len(imagelist))
         self.set_value(cur+1)
-        
+
     def set_value(self,value):
         try:
             value = int(value)
@@ -329,20 +340,20 @@ class PageSelect(QtGui.QDialog):
                 value = len(self.imagelist)
             self.slider.setValue(value)
             self.page.setText(text_type(value))
-            
+
             metric = QtGui.QFontMetrics(self.label.font())
             text = self.imagelist[value-1].filename
-            elided = metric.elidedText(text,QtCore.Qt.ElideLeft, 
+            elided = metric.elidedText(text,QtCore.Qt.ElideLeft,
                                        self.label.width())
             self.label.setText(elided)
         except ValueError:
             pass
-        
+
         self.value = self.slider.value()-1
 
 class WorkerThread(QtCore.QThread):
     loaded = QtCore.Signal(int)
-    
+
     def __init__(self, manager, pos):
         super(WorkerThread,self).__init__(manager.viewer)
         self.manager = manager
@@ -352,21 +363,21 @@ class WorkerThread(QtCore.QThread):
         self.img = None
         self.origsize = None
         # necessary to remove handle in viewer
-        self.finished.connect(self.removeParent) 
-        
+        self.finished.connect(self.removeParent)
+
     def run(self):
         try:
             self.img, self.origsize = self.manager.prepare_image(self.fileinfo)
         except IOError as err:
             self.error = text_type(err) or 'Unknown Image Loading Error'
         self.loaded.emit(self.pos)
-        
+
     def removeParent(self):
         self.setParent(None)
-        
+
 class DroppingThread(QtCore.QThread):
     loaded_archive = QtCore.Signal()
-    
+
     def __init__(self,*args):
         super(DroppingThread,self).__init__(*args)
         self.path = None
@@ -376,16 +387,16 @@ class DroppingThread(QtCore.QThread):
     def set_path(self,path):
         self.path = path
         return self
-        
+
     def pop_archive(self):
         if self.farch is None:
             raise WrapperIOError(self.errmsg or 'Unknown Error')
-        
+
         farch = self.farch
         self.farch = None
         self.errmsg = ''
         return farch
-        
+
     def run(self):
         try:
             self.farch = open_wrapper(self.path)
@@ -393,9 +404,9 @@ class DroppingThread(QtCore.QThread):
         except WrapperIOError as err:
             self.farch = None
             self.errmsg = text_type(err) or "Unknown Error"
-            
+
         self.loaded_archive.emit()
-        
+
 
 class ImageManager(object):
     DATA_IND = 0
@@ -404,7 +415,7 @@ class ImageManager(object):
     Scaling = namedtuple('Scaling', ['ratio', 'width', 'height'])
     re_scaling = re.compile(r'(?P<iwidth>\d+)\s*x\s*(?P<iheight>\d+)\s*'\
                             r'=\>\s*(?P<width>\d+)\s*x\s*(?P<height>\d+)')
-    
+
     def __init__(self, viewer, settings):
         movers = [m(viewer) for m in known_movers()]
         self.viewer = viewer
@@ -418,25 +429,25 @@ class ImageManager(object):
         self._booktimer = QtCore.QTimer(viewer)
         self._booktimer.timeout.connect(self._update_bookkeeping)
         self._booktimer.setSingleShot(True)
-        
+
         self._movers = dict((m.name, m) for m in movers)
         self._mover = None
         self._to_show = None
-        
+
         # set the first mover as the default one
         self.mover = self.movers[0]
         self.settings = settings
         self.set_settings(settings)
-        
+
         viewer.horizontalScrollBar().valueChanged.connect(self._view_changed)
         viewer.horizontalScrollBar().rangeChanged.connect(self._view_changed)
         viewer.verticalScrollBar().valueChanged.connect(self._view_changed)
         viewer.verticalScrollBar().rangeChanged.connect(self._view_changed)
-        
+
     def show_page(self, page, anchor='Start'):
         """
         Show the given page of the loaded archive.
-        
+
         Parameters
         ----------
         page : int
@@ -459,14 +470,15 @@ class ImageManager(object):
         elif page >= 0 and page < self.page_count:
             self._to_show = page
             self._load_page(page)
-            
+
     def set_settings(self, settings, continuous=False):
         refresh = continuous != self._mover.continuous or \
                   settings.scaling != self.settings.scaling or \
                   settings.minscale != self.settings.minscale or \
                   settings.maxscale != self.settings.maxscale or \
                   settings.overlap != self.settings.overlap or \
-                  settings.requiredoverlap != self.settings.requiredoverlap
+                  settings.requiredoverlap != self.settings.requiredoverlap or \
+                  settings.merge_threshold != self.settings.merge_threshold
 
         scaling_list = []
         for line in settings.scaling.split('\n'):
@@ -476,20 +488,21 @@ class ImageManager(object):
                 iw, ih, w, h = match.groups()
                 nscaling = self.Scaling(float(iw)/float(ih), int(w), int(h))
                 scaling_list.append(nscaling)
-        
+
         self.settings = settings
         self.scaling_list = sorted(scaling_list)
         self._mover.continuous = continuous
+        self._mover.merge_threshold = settings.merge_threshold
         if refresh:
             self.refresh()
-        
+
     def open_archive(self, wrapper, page=0):
         imagelist = wrapper.filter_images()
         path, name = os.path.split(wrapper.path)
 
         if len(imagelist) == 0:
             raise WrapperIOError('No images found in "%s"') % name
-            
+
         # close old wrapper if one is opened
         self.close()
         self.wrapper = wrapper
@@ -502,27 +515,27 @@ class ImageManager(object):
         """
         Open the image referenced in fileinfo and scale at it to the correct
         size.
-        
+
         Parameters
         ----------
         fileinfo : FileInfo
             A fileinfo object of the currently loaded wrapper
         """
-        
+
         with self.wrapper.open(fileinfo,'rb') as fin:
             img = Image.open(fin)
             origsize = img.size
             img = self._fit_image(img)
 
         return img, origsize
-        
+
     def refresh(self):
         if self:
             page = self._to_show or self.page
             self.clearBuffers()
             self._to_show = page
             self._load_page(page)
-        
+
     def close(self):
         self.clearBuffers()
         self._last_page = None
@@ -530,7 +543,7 @@ class ImageManager(object):
             self.wrapper.close()
             self.wrapper = None
             self.imagelist = []
-        
+
     def clearBuffers(self):
         for worker in itervalues(self.workers):
             worker.terminate()
@@ -539,34 +552,34 @@ class ImageManager(object):
         self._images = dict()
         self._errors = dict()
         self._to_show = None
-        
+
     def get_buffered_image(self, page):
         """
         Return the buffered PIL image of the given page, if availible
         """
         if page in self._images:
             return self._images[page][1]
-        
+
     def action_first_image(self):
         self.show_page(0, 'Start')
 
     def action_last_image(self):
         self.show_page(self.page_count-1, 'End')
-            
+
     def action_next_image(self):
         next_page = self.page + 1
         if next_page < self.page_count:
             self.show_page(next_page, 'Start')
         else:
             self.action_last_image()
-        
+
     def action_prev_image(self):
         next_page = self.page - 1
         if next_page >= 0:
             self.show_page(next_page, 'End')
         else:
             self.action_first_image()
-            
+
     def action_next(self):
         next_view, changed = self._mover.next_view(self.settings.overlap)
         self.viewer.centerOn(next_view.center())
@@ -578,26 +591,26 @@ class ImageManager(object):
         self.viewer.centerOn(next_view.center())
         if not changed and not self._mover.continuous:
             self.action_prev_image()
-            
+
     @property
     def movers(self):
         return sorted(self._movers)
-        
+
     @property
     def mover(self):
         return self._mover.name
-    
+
     @mover.setter
     def mover(self, name):
         self._mover = self._movers.get(name, self._mover)
         self._reoder_items()
-        
+
     @property
     def pixmap_item(self):
         view_rect = self.viewer.viewport().rect()
         view_rect = self.viewer.mapToScene(view_rect).boundingRect()
         return self._view_page(view_rect)
-        
+
     @property
     def page(self):
         item = self.pixmap_item
@@ -605,11 +618,11 @@ class ImageManager(object):
             return None
         else:
             return item.data(self.DATA_IND)
-    
+
     @property
     def page_count(self):
         return len(self.imagelist)
-        
+
     @property
     def page_description(self):
         infos = {}
@@ -623,23 +636,23 @@ class ImageManager(object):
             infos['info'] = u'%d/%d' % (page+1, self.page_count)
             infos['size'] = tuple(item.data(self.DATA_SIZE))
             infos['origsize'] = tuple(item.data(self.DATA_ORIGSIZE))
-            
+
             if hasattr(zi, 'image_url'):
                 infos['image_url'] = zi.image_url
             infos['filename'] = zi.filename
-    
+
             if hasattr(zi, 'page_url'):
                 infos['page_url'] = zi.page_url
         else:
             infos['info'] = u'No Images loaded'
             infos.append()
-                
+
         if self.wrapper is not None and not isinstance(self.wrapper, WebWrapper):
             infos['archpath'] = self.wrapper.path
             _, infos['archname'] = os.path.split(self.wrapper.path)
-            
+
         return infos
-            
+
     @property
     def status_info(self):
         infos = self.page_description
@@ -653,11 +666,11 @@ class ImageManager(object):
     def loaded_pages(self):
         scene = self.viewer.scene()
         return dict((item.data(self.DATA_IND), item) for item in scene.items())
-        
+
     @property
     def path(self):
         return self.wrapper.path if self.wrapper is not None else ''
-        
+
     def _view_changed(self):
         self._booktimer.start(100)
 
@@ -665,12 +678,12 @@ class ImageManager(object):
         for item in self.viewer.scene().items():
             if item.data(self.DATA_IND) == page:
                 return item
-            
+
     def _view_page(self, view_rect):
         # search for the item at the center of the provided view_rect
         center_item = None
         center = view_rect.center()
-        # no item at the center search for the item with the largest 
+        # no item at the center search for the item with the largest
         # overlap with the view_rect
         max_item = None
         max_surf = 0.0
@@ -684,9 +697,9 @@ class ImageManager(object):
                     max_surf = cur_surf
                 if item.contains(center):
                     center_item = item
-                
+
         return center_item or max_item
-        
+
     def _fit_image(self, img):
         width, height = img.size
         ratio = width/height
@@ -695,7 +708,7 @@ class ImageManager(object):
         move_h = int(swidth*(100-self.settings.overlap)/100)
         move_v = int(sheight*(100-self.settings.overlap)/100)
         origsize = width, height
-        
+
         defwidth, defheight = 0, 0
         best_match = float('inf')
         for cratio, cwidth, cheight in self.scaling_list:
@@ -710,31 +723,31 @@ class ImageManager(object):
                 defwidth = cwidth
                 defheight = cheight
                 best_match = cmatch
-        
+
         if defwidth > 0:
             width_scale = defwidth / width
         else:
             width_scale = float('inf')
-        
+
         if defheight > 0:
             height_scale = defheight / height
         else:
             height_scale = float('inf')
-        
+
         if abs(math.log(height_scale)) < abs(math.log(width_scale)):
             scale = height_scale
         else:
             scale = width_scale
-        
+
         if scale > (self.settings.maxscale/100):
             scale = self.settings.maxscale/100
         elif scale < (self.settings.minscale/100):
             scale = self.settings.minscale/100
-            
+
         width = int(width*scale)
         height = int(height*scale)
-        
-        if not self._mover.continuous:        
+
+        if not self._mover.continuous:
             requiredperc = self.settings.requiredoverlap/100.0
             wdiff = width-swidth
             hdiff = height-sheight
@@ -744,7 +757,7 @@ class ImageManager(object):
             elif hdiff > 0 and (hdiff%move_v) < requiredperc*sheight:
                 height = int(sheight+int(hdiff/move_v)*move_v)
                 width  = int(height*ratio)
-        
+
         csize = width, height
         if csize == origsize:
             img = img.convert('RGB')
@@ -753,15 +766,15 @@ class ImageManager(object):
         else:
             img.thumbnail(csize,Image.ANTIALIAS)
             img = img.convert('RGB')
-            
+
         return img
-        
+
     def _load_page(self, page):
         toload = page+1
         vis_page = self.page
         if vis_page is None:
             vis_page = toload
-            
+
         if page not in self.loaded_pages and page not in self.workers and \
           page >= 0 and page < len(self.imagelist):
             self.workers[page] = worker = WorkerThread(self, page)
@@ -771,37 +784,45 @@ class ImageManager(object):
     def _insert_page(self, page):
         worker = self.workers.pop(page)
         scene = self.viewer.scene()
-            
+        error = worker.error
+
         if worker.img is None:
             size = 10, 10
             image = None
             pixmap = QtGui.QPixmap(*size)
         else:
-            size = worker.img.size
-            image = ImageQt.ImageQt(worker.img)
-            self.image = image
-            pixmap = QtGui.QPixmap.fromImage(image)
-            
+            try:
+                size = worker.img.size
+                prevImg = self.get_buffered_image(page - 1)
+                worker.img = self._mover.crop_image(worker.img, prevImg)
+                image = ImageQt.ImageQt(worker.img)
+                pixmap = QtGui.QPixmap.fromImage(image)
+            except MemoryError:
+                size = worker.img.size
+                image = None
+                pixmap = QtGui.QPixmap(*size)
+                error = ('%s %s' % (error or '', 'Memory Error')).strip()
+
         item = scene.addPixmap(pixmap)
         item.setData(self.DATA_IND, page)
         item.setData(self.DATA_ORIGSIZE, worker.origsize)
         item.setData(self.DATA_SIZE, size)
         item.hide()
         self._images[page] = image, worker.img
-        self._errors[page] = worker.error
+        self._errors[page] = error
         self._reoder_items()
-        
+
         if self._to_show == page:
             self._to_show = None
             self.show_page(page)
         else:
             self._update_bookkeeping()
-        
+
     def _update_bookkeeping(self):
         vis_page = self._to_show or self.page
         if vis_page is None:
             return
-            
+
         loaded_pages = self.loaded_pages
         existing = set(loaded_pages) | set(self.workers)
         preloading = set(range(vis_page+1, vis_page+self.settings.preload+1))
@@ -823,13 +844,13 @@ class ImageManager(object):
                 del self._images[pos]
 
             self._reoder_items()
-        
+
         if self._last_page is None:
             self.viewer.show_status_info.emit()
-        elif self._last_page != vis_page:
+        elif self._last_page != vis_page and not self._mover.continuous:
             self.viewer.show_page_info.emit()
         self._last_page = vis_page
-            
+
     def _reoder_items(self):
         scene = self.viewer.scene()
         view_rect = self.viewer.viewport().rect()
@@ -842,7 +863,7 @@ class ImageManager(object):
         view_item = self.pixmap_item
         if view_item is not None:
             view_shift = view_rect.center() - view_item.boundingRect().center()
-        
+
         # show all pages directly connected to the currently page in focues
         pages = sorted(items)
         show_pages = {view_page}
@@ -857,39 +878,42 @@ class ImageManager(object):
             for cind in pages[:view_pos][::-1]:
                 if (cind+1) in show_pages:
                     show_pages.add(cind)
-        
+
         scene_rect = QtCore.QRectF(0, 0, 0, 0)
         for cind, item in sorted(iteritems(items)):
             if cind in show_pages:
                 item_rect = item.boundingRect()
                 scene_rect = self._mover.append_item(scene_rect, item_rect)
                 item.setOffset(item_rect.topLeft())
-            
+
         scene.setSceneRect(scene_rect)
         # shift view to show the same section as before the reorder
         if view_item is not None:
             ncenter = view_item.boundingRect().center() + view_shift
             self.viewer.centerOn(ncenter)
-            
+
         for cind, item in iteritems(items):
             item.setVisible(cind in show_pages)
-        
-    def __nonzero__(self):
+
+    def __bool__(self):
         return self.wrapper is not None and self.page is not None
+
+    __nonzero__ = __bool__
+
 
 class ImageViewer(QtGui.QGraphicsView):
     show_page_info = QtCore.Signal()
     show_status_info = QtCore.Signal()
-    
+
     label_css = """
-QLabel { 
-    background-color : black; 
-    color : white; 
+QLabel {
+    background-color : black;
+    color : white;
     padding: 5px 5px 5px 5px;
-    border-radius: 5px; 
+    border-radius: 5px;
 }
 """
-    
+
     def __init__(self,scene=None):
         super(ImageViewer,self).__init__(scene)
         self.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
@@ -899,10 +923,10 @@ QLabel {
         self.setWindowIcon(APP_ICON)
         self.setFrameShape(self.NoFrame)
         scene.setBackgroundBrush(QtCore.Qt.black)
-        
+
         self.dropping = DroppingThread(self)
         self.dropping.loaded_archive.connect(self.load_dropped_archive)
- 
+
         self.label = QtGui.QLabel(self.tr('Nothing to show<br \>'\
                                           'Open an image archive'), self)
         self.label.setStyleSheet(self.label_css)
@@ -911,111 +935,111 @@ QLabel {
         self.label.move(10,10)
         self.labeltimer = QtCore.QTimer(self)
         self.labeltimer.timeout.connect(self.hide_label)
-        
+
         self.resizetimer = QtCore.QTimer(self)
         self.resizetimer.timeout.connect(self.resize_view)
-        
+
         self.pageselect = PageSelect(self)
-        
+
         self.setAcceptDrops(True)
         self.settings = Settings.settings
         self.manager = ImageManager(self, Settings.settings)
         self.manager.scaling_list = self.settings.scaling
         self.show_page_info.connect(self.action_page_info)
         self.show_status_info.connect(self.action_status_info)
-                        
+
         actions = {}
         actions = {}
         actions['open'] = QtGui.QAction(self.tr("&Open"), self,
                         shortcut=QtGui.QKeySequence.Open,
-                        statusTip=self.tr("Open a new file"), 
+                        statusTip=self.tr("Open a new file"),
                         triggered=self.action_open)
         actions['settings'] = QtGui.QAction(self.tr("&Settings"), self,
                         shortcut=QtGui.QKeySequence(QtCore.Qt.Key_S),
-                        statusTip=self.tr("Open Settings"), 
+                        statusTip=self.tr("Open Settings"),
                         triggered=self.action_settings)
         actions['webparser'] = QtGui.QAction(self.tr("&Web Parser"), self,
                         shortcut=QtGui.QKeySequence(QtCore.Qt.Key_W),
-                        statusTip=self.tr("Settings for web parser"), 
+                        statusTip=self.tr("Settings for web parser"),
                         triggered=self.action_web_profile)
         actions['reload'] = QtGui.QAction(self.tr("Reload Archive"), self,
                          shortcut=QtGui.QKeySequence.Refresh,
-                         statusTip=self.tr("Reload the current Archive"), 
+                         statusTip=self.tr("Reload the current Archive"),
                          triggered=self.action_reload)
         actions['next_file'] = QtGui.QAction(self.tr("Next Archive"), self,
                          shortcut=QtGui.QKeySequence(QtCore.Qt.Key_L),
-                         statusTip=self.tr("Load the next archive in the folder"), 
+                         statusTip=self.tr("Load the next archive in the folder"),
                          triggered=self.action_next_file)
         actions['prev_file'] = QtGui.QAction(self.tr("Previous Archive"), self,
                          shortcut=QtGui.QKeySequence(QtCore.Qt.Key_K),
-                         statusTip=self.tr("Load the previous archive in the folder"), 
+                         statusTip=self.tr("Load the previous archive in the folder"),
                          triggered=self.action_prev_file)
         actions['next'] = QtGui.QAction(self.tr("Next View"), self,
                          shortcut=QtGui.QKeySequence(QtCore.Qt.Key_Space),
-                         statusTip=self.tr("Show next image part"), 
+                         statusTip=self.tr("Show next image part"),
                          triggered=self.manager.action_next)
         actions['prev'] = QtGui.QAction(self.tr("Previous View"), self,
                          shortcut=QtGui.QKeySequence("Shift+Space"),
-                         statusTip=self.tr("Show previous image part"), 
+                         statusTip=self.tr("Show previous image part"),
                          triggered=self.manager.action_prev)
         actions['page'] = QtGui.QAction(self.tr("Select Page"), self,
                          shortcut=QtGui.QKeySequence(QtCore.Qt.Key_P),
-                         statusTip=self.tr("Select the an image"), 
+                         statusTip=self.tr("Select the an image"),
                          triggered=self.action_page)
         actions['info'] = QtGui.QAction(self.tr("Information"), self,
                          shortcut=QtGui.QKeySequence(QtCore.Qt.Key_I),
                          checkable=True,
-                         statusTip=self.tr("Show informaion about image"), 
+                         statusTip=self.tr("Show informaion about image"),
                          triggered=self.action_info)
         actions['first_image'] = QtGui.QAction(self.tr("First Image"), self,
                          shortcut=QtGui.QKeySequence.MoveToStartOfLine,
-                         statusTip=self.tr("Show first image"), 
+                         statusTip=self.tr("Show first image"),
                          triggered=self.manager.action_first_image)
         actions['last_image'] = QtGui.QAction(self.tr("Last Image"), self,
                          shortcut=QtGui.QKeySequence.MoveToEndOfLine,
-                         statusTip=self.tr("Show last image"), 
+                         statusTip=self.tr("Show last image"),
                          triggered=self.manager.action_last_image)
         actions['next_image'] = QtGui.QAction(self.tr("Next Image"), self,
                          shortcut=QtGui.QKeySequence.MoveToNextPage,
-                         statusTip=self.tr("Show next image"), 
+                         statusTip=self.tr("Show next image"),
                          triggered=self.manager.action_next_image)
         actions['prev_image'] = QtGui.QAction(self.tr("Previous Image"), self,
                          shortcut=QtGui.QKeySequence.MoveToPreviousPage,
-                         statusTip=self.tr("Show previous image"), 
+                         statusTip=self.tr("Show previous image"),
                          triggered=self.manager.action_prev_image)
         actions['continuous'] = QtGui.QAction(self.tr("Continuous"), self,
                          shortcut=QtGui.QKeySequence(QtCore.Qt.Key_C),
                          checkable=True,
-                         statusTip=self.tr("Continuous Flow"), 
+                         statusTip=self.tr("Continuous Flow"),
                          triggered=self.action_toggle_continuous)
         actions['fullscreen'] = QtGui.QAction(self.tr("Fullscreen"), self,
                          shortcut=QtGui.QKeySequence(QtCore.Qt.Key_F),
                          checkable=True,
-                         statusTip=self.tr("Toggle Fullscreen"), 
+                         statusTip=self.tr("Toggle Fullscreen"),
                          triggered=self.action_toggle_fullscreen)
         actions['minimize'] = QtGui.QAction(self.tr("Minimize"), self,
                          shortcut=QtGui.QKeySequence(QtCore.Qt.Key_M),
-                         statusTip=self.tr("Minimize Window"), 
+                         statusTip=self.tr("Minimize Window"),
                          triggered=self.showMinimized)
         actions['close'] = QtGui.QAction(self.tr("Close"), self,
                          shortcut=QtGui.QKeySequence(QtCore.Qt.Key_Escape),
-                         statusTip=self.tr("Close Viewer"), 
+                         statusTip=self.tr("Close Viewer"),
                          triggered=self.close)
-                         
+
         self.writing = []
         self.auto_writing = set()
         self.last_farchinfo = None
         actions['save'] = QtGui.QAction(self.tr("Save as..."), self,
                          shortcut=QtGui.QKeySequence.Save,
-                         statusTip=self.tr("Close Viewer"), 
+                         statusTip=self.tr("Close Viewer"),
                          triggered=self.action_save)
-        for i in xrange(1, 10):
+        for i in range(1, 10):
             ckey = getattr(QtCore.Qt, 'Key_%d' % i)
             caction = QtGui.QAction(self.tr("Append current image"), self,
                       shortcut=QtGui.QKeySequence(ckey),
                       triggered=partial(self.action_save_current, i-1))
             actions['append_to_%d' % i] = caction
-            caction = QtGui.QAction(self.tr("Automatically append current image"), 
+            caction = QtGui.QAction(self.tr("Automatically append current image"),
                       self,
                       checkable=True,
                       triggered=partial(self.action_save_auto, i-1))
@@ -1028,16 +1052,16 @@ QLabel {
         actions['movement'] = QtGui.QActionGroup(self)
         actions['movement'].triggered.connect(self.action_movement)
         for mover in self.manager.movers:
-            act = QtGui.QAction(self.tr(mover), actions['movement'], 
+            act = QtGui.QAction(self.tr(mover), actions['movement'],
                                 checkable=True)
             if mover == self.manager.mover:
                 act.setChecked(True)
-            
+
         for act in itervalues(actions):
             if isinstance(act,QtGui.QAction):
                 self.addAction(act)
         self.actions = actions
-        
+
     def load_dropped_archive(self):
         try:
             farch = self.dropping.pop_archive()
@@ -1055,17 +1079,17 @@ QLabel {
             self.label.show()
             self.labeltimer.start(self.settings.longtimeout)
             return False
-            
+
     def load_archive(self, path, page=0):
         """
         load the images in the archive given py path and show the first one.
-        
+
         Parameters
         ----------
             path : the path to the archive to load
             page : the page to open in the archive, default 0.
-            
-        
+
+
         Returns
         ----------
             success : returns ``True`` if images could be loaded and ``False``
@@ -1087,18 +1111,18 @@ QLabel {
             self.label.show()
             self.labeltimer.start(self.settings.longtimeout)
             return False
-            
+
     def hide_label(self):
         self.actions['info'].setChecked(QtCore.Qt.Unchecked)
         self.label.hide()
         self.labeltimer.stop()
-        
+
     def resize_view(self):
         self.resizetimer.stop()
         self.manager.clearBuffers()
         if self.imagelist:
             self.action_queued_image(self.cur,self._mv_start)
-        
+
     def contextMenuEvent(self, event):
         menu = QtGui.QMenu(self)
         menu.addAction(self.actions['open'])
@@ -1115,7 +1139,7 @@ QLabel {
             c_menu.addAction(c_auto)
             c_menu.addAction(c_close)
         sv_menu.addAction(self.actions['save'])
-            
+
         menu.addAction(self.actions['prev_file'])
         menu.addAction(self.actions['reload'])
         menu.addAction(self.actions['next_file'])
@@ -1140,13 +1164,13 @@ QLabel {
         menu.addAction(self.actions['settings'])
         menu.addAction(self.actions['close'])
         menu.exec_(event.globalPos())
- 
+
     def dragEnterEvent(self,e):
         if e.mimeData().hasUrls():
             e.accept()
         else:
             super(ImageViewer,self).dragEnterEvent(e)
-            
+
     def dragMoveEvent(self, e):
         if e.mimeData().hasUrls():
             e.setDropAction(QtCore.Qt.LinkAction)
@@ -1161,7 +1185,7 @@ QLabel {
             url = event.mimeData().urls()[0]
             path = text_type(url.toLocalFile() or url.toString())
             self.dropping.set_path(path).start()
-            
+
             labelstr = u'Loading "%s"' % path
             self.label.setText(labelstr)
             self.label.resize(self.label.sizeHint())
@@ -1172,12 +1196,12 @@ QLabel {
 
     def mouseDoubleClickEvent(self,e):
         self.manager.action_next()
-        
+
     def resizeEvent(self,e):
         if e.oldSize().isValid():
             self.resizetimer.start(100)
         super(ImageViewer,self).resizeEvent(e)
-        
+
     def closeEvent(self,e):
         self.save_settings()
         self.manager.close()
@@ -1185,7 +1209,7 @@ QLabel {
             farch.close()
 
         super(ImageViewer,self).closeEvent(e)
-        
+
     def action_open(self):
         archives = ' '.join('*%s' % ext for ext in ArchiveWrapper.formats)
         dialog = QtGui.QFileDialog(self)
@@ -1198,7 +1222,7 @@ QLabel {
             dialog.setDirectory(path)
         if dialog.exec_():
             self.load_archive(dialog.selectedFiles()[0])
-            
+
     def action_save(self):
         if len(self.writing) >= 9:
             return
@@ -1232,7 +1256,7 @@ QLabel {
         infos = self.manager.page_description
         if archive_ind >= self.writing or 'filename' not in infos:
             return
-        
+
         base, filename = os.path.split(infos['filename'])
         #remove trailing part seperated by ?
         filename = filename.split('?')[0].strip()
@@ -1240,7 +1264,7 @@ QLabel {
         filename = u'%.3d_%s' % (infos['page'], filename)
         img = self.manager.get_buffered_image(infos['page'])
         farch = self.writing[archive_ind]
-        
+
         if isinstance(img, Image.Image) and filename not in farch:
             with farch.open(filename, 'w') as fout:
                 img.save(fout,'jpeg',quality=self.settings.write_quality,
@@ -1250,13 +1274,13 @@ QLabel {
             self.label.resize(self.label.sizeHint())
             self.label.show()
             self.labeltimer.start(self.settings.longtimeout)
-            
+
     def action_save_auto(self, archive_ind):
         if archive_ind >= self.writing:
             return
-            
+
         farch = self.writing[archive_ind]
-        
+
         if farch in self.auto_writing:
             self.auto_writing.remove(farch)
         else:
@@ -1265,7 +1289,7 @@ QLabel {
     def action_save_close(self, archive_ind):
         if archive_ind >= self.writing:
             return
-            
+
         farch = self.writing.pop(archive_ind)
 
         if farch in self.auto_writing:
@@ -1286,17 +1310,17 @@ QLabel {
             osettings = self.settings
             self.settings = dialog.settings
             self.manager.set_settings(dialog.settings)
-                
+
             if osettings.bgcolor != self.settings.bgcolor:
                 self.scene().setBackgroundBrush(self.settings.bgcolor)
-        
+
     def action_page(self):
         manager = self.manager
         if manager.imagelist:
             self.pageselect.set_range(manager.page, manager.imagelist)
             if self.pageselect.exec_():
                 manager.show_page(self.pageselect.value)
-                
+
     def action_page_info(self):
         if not self.actions['info'].isChecked() or self.labeltimer.isActive():
             infos = self.manager.page_description
@@ -1314,10 +1338,10 @@ QLabel {
         else:
             self.label.hide()
             self.action_info()
-            
+
         for farch in self.auto_writing:
             self.action_save_current(self.writing.index(farch))
-        
+
     def action_status_info(self):
         use_to = not self.actions['info'].isChecked() or self.labeltimer.isActive()
         self.label.hide()
@@ -1338,7 +1362,7 @@ QLabel {
                 tpl = infos['origsize'] + infos['size']
                 fmt = u'%d \u2715 %d \u21D2 %d \u2715 %d'
                 labels.append(fmt % tuple(tpl))
-            
+
             if 'image_url' in infos:
                 url = cgi.escape(infos['image_url'])
                 filename = cgi.escape(infos['filename'])
@@ -1351,7 +1375,7 @@ QLabel {
                 labels.append(a_tag % (url, url))
             elif 'archname' in infos:
                 labels.append(cgi.escape(infos['archname']))
-            
+
             if 'status' in infos:
                 labels.append(cgi.escape(infos['status']))
 
@@ -1362,17 +1386,17 @@ QLabel {
         elif self.manager:
             self.actions['info'].setChecked(QtCore.Qt.Unchecked)
             self.label.hide()
-        
+
     def action_movement(self,action):
         action.setChecked(True)
         self.manager.mover = action.text()
-    
+
     def action_toggle_fullscreen(self):
         if self.isFullScreen():
             self.showNormal()
         else:
             self.showFullScreen()
-            
+
     def action_toggle_continuous(self):
         continuous = self.actions['continuous'].isChecked()
         self.manager.set_settings(self.settings, continuous)
@@ -1396,14 +1420,14 @@ QLabel {
         if farch:
             archlist,loadindex = farch.list_archives()
             folder, name = os.path.split(farch.path)
-                
+
             loadindex += 1
             while loadindex < len(archlist) and \
               not self.load_archive(archlist[loadindex]):
                 loadindex += 1
-                    
+
             if loadindex >= len(archlist):
-                errormsg = self.tr('No further archives in "%s"') % folder 
+                errormsg = self.tr('No further archives in "%s"') % folder
 
         if errormsg:
             errormsg = cgi.escape(errormsg)
@@ -1411,19 +1435,19 @@ QLabel {
             self.label.resize(self.label.sizeHint())
             self.label.show()
             self.labeltimer.start(self.settings.longtimeout)
-            
-    
+
+
     def action_prev_file(self):
         errormsg = ''
         farch = self.manager.wrapper
         if farch:
             archlist,loadindex = farch.list_archives()
             folder, name = os.path.split(farch.path)
-                
+
             loadindex -= 1
             while loadindex >= 0 and not self.load_archive(archlist[loadindex]):
-                loadindex -= 1  
-                    
+                loadindex -= 1
+
             if loadindex < 0:
                 errormsg = self.tr('No previous archives in "%s"') % folder
 
@@ -1433,10 +1457,10 @@ QLabel {
             self.label.resize(self.label.sizeHint())
             self.label.show()
             self.labeltimer.start(self.settings.longtimeout)
-            
+
     def save_settings(self):
         isContinuous = self.actions['continuous'].isChecked()
-        
+
         settings = QtCore.QSettings("Caasar", "Image Viewer")
         settings.beginGroup("MainWindow")
         settings.setValue("fullscreen", self.isFullScreen())
@@ -1445,7 +1469,7 @@ QLabel {
             settings.setValue("pos", self.pos())
             settings.setValue("size", self.size())
         settings.setValue("movement", self.manager.mover)
-        settings.endGroup()        
+        settings.endGroup()
         settings.beginGroup("Settings")
         csettings = self.settings._asdict()
         for key, value in iteritems(csettings):
@@ -1455,7 +1479,7 @@ QLabel {
         for key,val in WebWrapper.profiles.items():
             values = repr(tuple(val[key] for key in WebWrapper.profile_keys))
             settings.setValue(key,values)
-        settings.endGroup()        
+        settings.endGroup()
 
         if self.settings.saveposition and self.manager:
             infos = self.manager.page_description
@@ -1467,7 +1491,7 @@ QLabel {
                 settings.setValue("lastpath", infos['archpath'])
                 settings.setValue("lastpage", infos['page'])
             settings.endGroup()
-        
+
     def load_settings(self):
         settings = QtCore.QSettings("Caasar", "Image Viewer")
         settings.beginGroup("MainWindow")
@@ -1479,7 +1503,7 @@ QLabel {
         for act in self.actions['movement'].actions():
             if act.text() == self.manager.mover:
                 act.setChecked(True)
-        settings.endGroup()        
+        settings.endGroup()
         settings.beginGroup("Settings")
         csettings = self.settings._asdict()
         for key, defvalue in iteritems(csettings):
@@ -1492,7 +1516,7 @@ QLabel {
         settings.endGroup()
 
         self.scene().setBackgroundBrush(self.settings.bgcolor)
-        
+
         settings.beginGroup("WebProfiles")
         for profile in settings.childKeys():
             values = literal_eval(settings.value(profile))
@@ -1507,13 +1531,13 @@ QLabel {
             page = settings.value("lastpage", 0) or 0
             if path:
                 self.load_archive(path, page)
-            
+
         if isFullscreen:
             self.actions['fullscreen'].setChecked(QtCore.Qt.Checked)
         if isContinuous:
             self.actions['continuous'].setChecked(QtCore.Qt.Checked)
         return isFullscreen
-        
+
 
 if __name__ == "__main__":
     app = QtGui.QApplication(sys.argv[:1])
@@ -1524,8 +1548,8 @@ if __name__ == "__main__":
         view.showFullScreen()
     else:
         view.show()
-    
+
     if len(sys.argv) > 1:
         view.load_archive(sys.argv[1])
     sys.exit(app.exec_())
-    
+
