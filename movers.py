@@ -6,15 +6,19 @@ Created on Mon Nov 13 20:47:28 2017
 """
 from __future__ import division
 
-import numpy as np
-try:
-    from PySide import QtCore
-except ImportError:
-    from PyQt4 import QtCore
+#try:
+#    from PySide import QtCore
+#except ImportError:
+#    from PyQt4 import QtCore
 
 INF_POINT = 1000000000
 
 def crop_image(img, prevImg, thr=50.0, min_lines=25, stop_thr=150):
+    try:
+        import numpy as np
+    except ImportError:
+        return img
+
     if thr <= 0.0:
         return img
 
@@ -56,11 +60,16 @@ def crop_image(img, prevImg, thr=50.0, min_lines=25, stop_thr=150):
 
 
 class BaseMover(object):
+    MinValue = 245
+    FilterLen = 5
+
     def __init__(self, viewer, name):
         self.viewer = viewer
         self.name = name
         self._continuous = False
         self._merge_threshold = 50.0
+        self._tops = []
+        self._bottoms = []
 
     def step_sizes(self, overlap):
         """
@@ -114,6 +123,28 @@ class BaseMover(object):
         else:
             return img
 
+    def segment_image(self, img):
+        if not self._continuous:
+            return [], []
+        try:
+            import numpy as np
+            from scipy import ndimage
+        except ImportError:
+            return [], []
+
+        arr = np.asarray(img.convert('L'))
+        structure = np.ones(self.FilterLen, np.bool)
+        isw = ndimage.binary_opening(arr.min(1) > self.MinValue,
+                                     structure=structure)
+        start = np.flatnonzero(isw[:-1] & (~isw[1:])) - self.FilterLen + 1
+        stop = np.flatnonzero((~isw[:-1]) & isw[1:]) + self.FilterLen + 1
+        return start.tolist(), stop.tolist()
+
+
+    def set_segments(self, tops, bottoms):
+        self._tops = tops[::-1]
+        self._bottoms = bottoms
+
     @property
     def continuous(self):
         return self._continuous
@@ -141,6 +172,37 @@ class BaseMover(object):
     @classmethod
     def append_item(cls, scene_rect, item_rect):
         return item_rect
+
+    def _next_segment(self, view, dy):
+        viewTop = int(view.top())
+        viewBottom = int(view.bottom())
+        for ct in self._tops:
+            if viewTop < ct:
+                dy = ct - viewTop
+            if ct < viewBottom:
+                break
+
+        for cb in self._bottoms:
+            if viewBottom < cb:
+                dy = min(cb - viewBottom, dy)
+                break
+
+        return dy
+
+    def _prev_segment(self, view, dy):
+        viewTop = int(view.top())
+        viewBottom = int(view.bottom())
+        for cb in self._bottoms:
+            if cb < viewBottom:
+                dy = viewBottom - cb
+            if cb > view.top():
+                break
+
+        for ct in self._tops:
+            if ct < viewTop:
+                dy = min(viewTop - ct, dy)
+
+        return dy
 
     def __as_immutable__(self):
         return self.name
@@ -257,6 +319,7 @@ class RightDownMover(BaseMover):
 
     def next_view(self, overlap):
         dx, dy, view, scene = self.step_sizes(overlap)
+        dy = self._next_segment(view, dy)
         if scene.right() > view.right():
             view.adjust(dx, 0, dx, 0)
         elif scene.bottom() > view.bottom():
@@ -265,6 +328,7 @@ class RightDownMover(BaseMover):
 
     def prev_view(self, overlap):
         dx, dy, view, scene = self.step_sizes(overlap)
+        dy = self._prev_segment(view, dy)
         if scene.left() < view.left():
             view.adjust(-dx, 0, -dx, 0)
         elif scene.top() < view.top():
@@ -304,15 +368,16 @@ class LeftDownMover(BaseMover):
 
     def next_view(self, overlap):
         dx, dy, view, scene = self.step_sizes(overlap)
+        dy = self._next_segment(view, dy)
         if scene.left() < view.left():
             view.adjust(-dx, 0, -dx, 0)
         elif scene.bottom() > view.bottom():
             view.adjust(INF_POINT, dy, INF_POINT, dy)
         return self.align_view(view, scene)
 
-
     def prev_view(self, overlap):
         dx, dy, view, scene = self.step_sizes(overlap)
+        dy = self._prev_segment(view, dy)
         if scene.right() > view.right():
             view.adjust(dx, 0, dx, 0)
         elif scene.top() < view.top():

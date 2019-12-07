@@ -27,6 +27,7 @@ from movers import known_movers
 import PIL.Image as Image
 import PIL.ImageQt as ImageQt
 
+
 def open_wrapper(path):
     """
     Open the the correct Wrapper for the provided path.
@@ -38,7 +39,6 @@ def open_wrapper(path):
         farch = PdfWrapper(path)
     else:
         farch = ArchiveWrapper(path,'r')
-
     return farch
 
 
@@ -362,12 +362,16 @@ class WorkerThread(QtCore.QThread):
         self.error = ''
         self.img = None
         self.origsize = None
+        self.tops = []
+        self.bottoms = []
         # necessary to remove handle in viewer
         self.finished.connect(self.removeParent)
 
     def run(self):
         try:
-            self.img, self.origsize = self.manager.prepare_image(self.fileinfo)
+            data = self.manager.prepare_image(self.fileinfo)
+            for k, v in data.items():
+                setattr(self, k, v)
         except IOError as err:
             self.error = text_type(err) or 'Unknown Image Loading Error'
         self.loaded.emit(self.pos)
@@ -412,6 +416,8 @@ class ImageManager(object):
     DATA_IND = 0
     DATA_SIZE = 1
     DATA_ORIGSIZE = 2
+    DATA_TOPS = 3
+    DATA_BOTTOMS = 4
     Scaling = namedtuple('Scaling', ['ratio', 'width', 'height'])
     re_scaling = re.compile(r'(?P<iwidth>\d+)\s*x\s*(?P<iheight>\d+)\s*'\
                             r'=\>\s*(?P<width>\d+)\s*x\s*(?P<height>\d+)')
@@ -526,8 +532,10 @@ class ImageManager(object):
             img = Image.open(fin)
             origsize = img.size
             img = self._fit_image(img)
+            tops, bottoms = self._mover.segment_image(img)
 
-        return img, origsize
+        return {'img': img, 'origsize': origsize,
+                'tops': tops, 'bottoms': bottoms}
 
     def refresh(self):
         if self:
@@ -785,6 +793,8 @@ class ImageManager(object):
         worker = self.workers.pop(page)
         scene = self.viewer.scene()
         error = worker.error
+        tops = worker.tops
+        bottoms = worker.bottoms
 
         if worker.img is None:
             size = 10, 10
@@ -797,6 +807,9 @@ class ImageManager(object):
                 worker.img = self._mover.crop_image(worker.img, prevImg)
                 image = ImageQt.ImageQt(worker.img)
                 pixmap = QtGui.QPixmap.fromImage(image)
+                dheight = worker.img.size[1] - size[1]
+                tops = [t + dheight for t in tops]
+                bottoms = [t + dheight for t in bottoms]
             except MemoryError:
                 size = worker.img.size
                 image = None
@@ -807,6 +820,8 @@ class ImageManager(object):
         item.setData(self.DATA_IND, page)
         item.setData(self.DATA_ORIGSIZE, worker.origsize)
         item.setData(self.DATA_SIZE, size)
+        item.setData(self.DATA_TOPS, tops)
+        item.setData(self.DATA_BOTTOMS, bottoms)
         item.hide()
         self._images[page] = image, worker.img
         self._errors[page] = error
@@ -880,13 +895,21 @@ class ImageManager(object):
                     show_pages.add(cind)
 
         scene_rect = QtCore.QRectF(0, 0, 0, 0)
+        tops = []
+        bottoms = []
         for cind, item in sorted(iteritems(items)):
             if cind in show_pages:
                 item_rect = item.boundingRect()
                 scene_rect = self._mover.append_item(scene_rect, item_rect)
                 item.setOffset(item_rect.topLeft())
+                offset = int(item_rect.top())
+                for c in item.data(self.DATA_TOPS):
+                    tops.append(c + offset)
+                for c in item.data(self.DATA_BOTTOMS):
+                    bottoms.append(c + offset)
 
         scene.setSceneRect(scene_rect)
+        self._mover.set_segments(tops, bottoms)
         # shift view to show the same section as before the reorder
         if view_item is not None:
             ncenter = view_item.boundingRect().center() + view_shift
