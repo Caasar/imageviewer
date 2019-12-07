@@ -12,7 +12,7 @@ import gzip
 import socket
 from io import BytesIO
 from six import text_type, reraise
-from six.moves.html_parser import HTMLParser, HTMLParseError
+from six.moves.html_parser import HTMLParser
 from six.moves.urllib.request import urlopen, Request
 from six.moves.urllib.error import HTTPError, URLError
 from six.moves.BaseHTTPServer import BaseHTTPRequestHandler
@@ -126,7 +126,7 @@ class ImageParser(HTMLParser):
     minlength = 50000
     
     def __init__(self,url):
-        HTMLParser.__init__(self)
+        super(HTMLParser, self).__init__()
         self.saved_link = None
         self.imgs_lists = [list() for dummy in range(8)]
                  
@@ -149,7 +149,7 @@ class ImageParser(HTMLParser):
                     except UnicodeDecodeError:
                         content = raw_bytes.decode('latin1')
                 self.feed(content)
-            except HTMLParseError as err:
+            except Exception as err:
                 WebIOError(text_type(err))
                 
     def handle_starttag(self,tag,attrs):
