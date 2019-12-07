@@ -176,33 +176,62 @@ class BaseMover(object):
     def _next_segment(self, view, dy):
         viewTop = int(view.top())
         viewBottom = int(view.bottom())
+        nextBottom = viewBottom + dy
+        minTop = viewTop
+        targetBottom = None
+        targetTop = None
+        for cb in self._bottoms:
+            if nextBottom < cb:
+                break
+            if viewBottom < cb:
+                targetBottom = cb
+            elif minTop < cb:
+                minTop = cb
+
+        minTop -= 2 * self.FilterLen
         for ct in self._tops:
-            if viewTop < ct:
-                dy = ct - viewTop
+            if viewTop < minTop and minTop < ct:
+                targetTop = ct
             if ct < viewBottom:
                 break
 
-        for cb in self._bottoms:
-            if viewBottom < cb:
-                dy = min(cb - viewBottom, dy)
-                break
-
-        return dy
+        if targetTop is not None:
+            return targetTop - viewTop
+        elif targetBottom is not None:
+            return targetBottom - viewBottom
+        else:
+            return dy
 
     def _prev_segment(self, view, dy):
         viewTop = int(view.top())
         viewBottom = int(view.bottom())
+
+
+        nextTop = viewTop - dy
+        maxBottom = viewBottom
+        targetTop = None
+        targetBottom = None
+        for ct in self._tops:
+            if ct < nextTop:
+                break
+            if ct < viewTop:
+                targetTop = ct
+            elif ct < maxBottom:
+                maxBottom = ct
+
+        maxBottom += 2 * self.FilterLen
         for cb in self._bottoms:
-            if cb < viewBottom:
-                dy = viewBottom - cb
-            if cb > view.top():
+            if maxBottom < viewBottom and cb < maxBottom:
+                targetBottom = cb
+            if viewTop < cb:
                 break
 
-        for ct in self._tops:
-            if ct < viewTop:
-                dy = min(viewTop - ct, dy)
-
-        return dy
+        if targetBottom is not None:
+            return viewBottom - targetBottom
+        elif targetTop is not None:
+            return viewTop - targetTop
+        else:
+            return dy
 
     def __as_immutable__(self):
         return self.name
