@@ -14,8 +14,9 @@ except ImportError:
 
 import os,re,html
 import math
+import traceback
 from ast import literal_eval
-from six import text_type, itervalues, iteritems
+from six import text_type, itervalues, iteritems, reraise
 from six.moves import range
 from functools import partial
 from collections import namedtuple
@@ -119,12 +120,9 @@ class WebProfileSettings(QtWidgets.QDialog):
 
     def update_profile(self):
         profile = self.profile.currentText()
-        print('update_profile', profile)
         if profile:
             if profile not in self.profiles:
-                print('addItem')
                 self.profile.addItem(profile)
-                print('addItem')
             prof = self.profiles.setdefault(profile, {})
             prof['url'] = self.page_url.text()
             prof['img'] = self.img_url.text()
@@ -377,8 +375,13 @@ class WorkerThread(QtCore.QThread):
             data = self.manager.prepare_image(self.fileinfo)
             for k, v in data.items():
                 setattr(self, k, v)
+        except WrapperIOError as err:
+            self.error = str(err)
         except IOError as err:
-            self.error = text_type(err) or 'Unknown Image Loading Error'
+            self.error = str(err) or 'Unknown Image Loading Error'
+        except Exception:
+            self.error = traceback.format_exception(*sys.exc_info())
+
         self.loaded.emit(self.pos)
 
     def removeParent(self):
@@ -398,7 +401,9 @@ class DroppingThread(QtCore.QThread):
         return self
 
     def pop_archive(self):
-        if self.farch is None:
+        if isinstance(self.errmsg, tuple):
+            reraise(*self.errmsg)
+        elif self.farch is None:
             raise WrapperIOError(self.errmsg or 'Unknown Error')
 
         farch = self.farch
@@ -412,7 +417,10 @@ class DroppingThread(QtCore.QThread):
             self.errmsg = None
         except WrapperIOError as err:
             self.farch = None
-            self.errmsg = text_type(err) or "Unknown Error"
+            self.errmsg = str(err) or "Unknown Error"
+        except Exception:
+            self.farch = None
+            self.errmsg = sys.exc_info()
 
         self.loaded_archive.emit()
 
@@ -478,6 +486,7 @@ class ImageManager(object):
             else:
                 view_rect = self._mover.first_view(item)
             self.viewer.centerOn(view_rect.center())
+            self.viewer.show_page_info.emit()
         elif page >= 0 and page < self.page_count:
             self._to_show = page
             self._load_page(page)
@@ -637,6 +646,10 @@ class ImageManager(object):
         return len(self.imagelist)
 
     @property
+    def continuous(self):
+        return self._mover.continuous
+
+    @property
     def page_description(self):
         infos = {}
         item = self.pixmap_item
@@ -646,9 +659,12 @@ class ImageManager(object):
             infos['page'] = page
             infos['page_count'] = self.page_count
             infos['error'] = self._errors.get(page, '')
-            infos['info'] = u'%d/%d' % (page+1, self.page_count)
-            infos['size'] = tuple(item.data(self.DATA_SIZE))
-            infos['origsize'] = tuple(item.data(self.DATA_ORIGSIZE))
+            size = item.data(self.DATA_SIZE)
+            if size is not None:
+                infos['size'] = tuple(size)
+            origsize = item.data(self.DATA_ORIGSIZE)
+            if origsize is not None:
+                infos['origsize'] = tuple(origsize)
 
             if hasattr(zi, 'image_url'):
                 infos['image_url'] = zi.image_url
@@ -656,9 +672,8 @@ class ImageManager(object):
 
             if hasattr(zi, 'page_url'):
                 infos['page_url'] = zi.page_url
-        else:
-            infos['info'] = u'No Images loaded'
-            infos.append()
+        elif isinstance(self.wrapper, WebWrapper):
+            infos['page_url'] = self.wrapper.path
 
         if self.wrapper is not None and not isinstance(self.wrapper, WebWrapper):
             infos['archpath'] = self.wrapper.path
@@ -673,6 +688,10 @@ class ImageManager(object):
             loading = ','.join(text_type(p+1) for p in sorted(self.workers))
             cinfo = u'Loading %s' % loading
             infos['status'] = cinfo
+        elif self.wrapper is None:
+            infos['status'] = self.viewer.empty_label_str
+        else:
+            infos['status'] = ''
         return infos
 
     @property
@@ -794,6 +813,8 @@ class ImageManager(object):
             worker.loaded.connect(self._insert_page)
             worker.start()
 
+        self.viewer.show_status_info.emit(0)
+
     def _insert_page(self, page):
         worker = self.workers.pop(page)
         scene = self.viewer.scene()
@@ -865,10 +886,13 @@ class ImageManager(object):
 
             self._reoder_items()
 
+
         if self._last_page is None:
-            self.viewer.show_status_info.emit()
-        elif self._last_page != vis_page and not self._mover.continuous:
+            self.viewer.show_status_info.emit(1)
+        elif self._last_page != vis_page:
             self.viewer.show_page_info.emit()
+        else:
+            self.viewer.show_status_info.emit(0)
         self._last_page = vis_page
 
     def _reoder_items(self):
@@ -931,7 +955,9 @@ class ImageManager(object):
 
 class ImageViewer(QtWidgets.QGraphicsView):
     show_page_info = QtCore.Signal()
-    show_status_info = QtCore.Signal()
+    show_status_info = QtCore.Signal(int)
+
+    empty_label_str = 'Nothing to show. Open an image archive'
 
     label_css = """
 QLabel {
@@ -955,8 +981,7 @@ QLabel {
         self.dropping = DroppingThread(self)
         self.dropping.loaded_archive.connect(self.load_dropped_archive)
 
-        self.label = QtWidgets.QLabel(self.tr('Nothing to show<br \>'\
-                                          'Open an image archive'), self)
+        self.label = QtWidgets.QLabel(self.tr(self.empty_label_str), self)
         self.label.setStyleSheet(self.label_css)
         self.label.setOpenExternalLinks(True)
         self.label.setTextFormat(QtCore.Qt.RichText)
@@ -1097,16 +1122,23 @@ QLabel {
             ntitle = '%s - %s' % (name, self.tr("Image Viewer"))
             self.manager.open_archive(farch)
             self.setWindowTitle(ntitle)
-            return True
 
         except WrapperIOError as err:
-            errormsg = text_type(err) or self.tr("Unknown Error")
-            errormsg = html.escape(errormsg)
-            self.label.setText(errormsg)
+            errormsg = html.escape(str(err)) or "Unknown Error"
+            errormsg = '<br/>'.join(s.strip() for s in errormsg.split('\n'))
+            self.label.setText(self.tr(errormsg))
             self.label.resize(self.label.sizeHint())
             self.label.show()
             self.labeltimer.start(self.settings.longtimeout)
-            return False
+        except Exception:
+            trace = traceback.format_exception(*sys.exc_info())
+            mask = 'Unexpected Error:<br/><pre>%s</pre>'
+            errmsg = html.escape('\n'.join(trace))
+            self.label.setText(self.tr(mask % errmsg))
+            self.label.resize(self.label.sizeHint())
+            self.label.show()
+            self.labeltimer.start(self.settings.longtimeout)
+
 
     def load_archive(self, path, page=0):
         """
@@ -1348,7 +1380,9 @@ QLabel {
                 manager.show_page(self.pageselect.value)
 
     def action_page_info(self):
-        if not self.actions['info'].isChecked() or self.labeltimer.isActive():
+        if self.actions['info'].isChecked():
+            self._update_info()
+        elif not self.manager.continuous:
             infos = self.manager.page_description
             page = infos['page']
             page_count = infos['page_count']
@@ -1361,56 +1395,34 @@ QLabel {
             self.label.resize(self.label.sizeHint())
             self.label.show()
             self.labeltimer.start(self.settings.shorttimeout)
-        else:
-            self.label.hide()
-            self.action_info()
 
         for farch in self.auto_writing:
             self.action_save_current(self.writing.index(farch))
 
-    def action_status_info(self):
-        use_to = not self.actions['info'].isChecked() or self.labeltimer.isActive()
-        self.label.hide()
-        self.action_info()
-        if use_to:
-            self.labeltimer.start(self.settings.longtimeout)
+    def action_status_info(self, priority):
+        # if the information is open or we are loading an archive
+        # we should update the info
+        if self.actions['info'].isChecked() or not self.manager:
+            self._update_info()
+        elif priority > 0:
+            self._update_info()
+            self.label.show()
+            if not self.actions['info'].isChecked():
+                self.labeltimer.start(self.settings.longtimeout)
 
         for farch in self.auto_writing:
             self.action_save_current(self.writing.index(farch))
 
     def action_info(self):
-        a_tag = u'<a href="%s"><span style="color:white;">%s</span></a>'
-
-        if self.label.isHidden() and self.manager:
-            infos = self.manager.status_info
-            labels = [infos['info']]
-            if 'size' in infos and 'origsize' in infos:
-                tpl = infos['origsize'] + infos['size']
-                fmt = u'%d \u2715 %d \u21D2 %d \u2715 %d'
-                labels.append(fmt % tuple(tpl))
-
-            if 'image_url' in infos:
-                url = html.escape(infos['image_url'])
-                filename = html.escape(infos['filename'])
-                labels.append(a_tag % (url, filename))
-            elif 'filename' in infos:
-                labels.append(infos['filename'])
-
-            if 'page_url' in infos:
-                url = html.escape(infos['page_url'])
-                labels.append(a_tag % (url, url))
-            elif 'archname' in infos:
-                labels.append(html.escape(infos['archname']))
-
-            if 'status' in infos:
-                labels.append(html.escape(infos['status']))
-
-            self.label.setText('<br />'.join(labels))
-            self.label.resize(self.label.sizeHint())
+        #show the label when info is active or no data is loaded
+        if not self.manager:
+            self._update_info()
             self.label.show()
-            self.actions['info'].setChecked(QtCore.Qt.Checked)
-        elif self.manager:
-            self.actions['info'].setChecked(QtCore.Qt.Unchecked)
+        elif self.actions['info'].isChecked():
+            self.labeltimer.stop()
+            self._update_info()
+            self.label.show()
+        else:
             self.label.hide()
 
     def action_movement(self,action):
@@ -1563,6 +1575,50 @@ QLabel {
         if isContinuous:
             self.actions['continuous'].setChecked(QtCore.Qt.Checked)
         return isFullscreen
+
+    def _update_info(self):
+        a_tag = u'<a href="%s"><span style="color:white;">%s</span></a>'
+        infos = self.manager.status_info
+        labels = []
+        if 'page' in infos and 'page_count' in infos:
+            data = infos['page']+1, infos['page_count']
+            labels.append('%d/%d' % data)
+
+        if 'size' in infos and 'origsize' in infos:
+            tpl = infos['origsize'] + infos['size']
+            fmt = u'%d \u2715 %d \u21D2 %d \u2715 %d'
+            labels.append(fmt % tuple(tpl))
+
+        if 'image_url' in infos:
+            url = html.escape(infos['image_url'])
+            filename = html.escape(infos['filename'])
+            labels.append(a_tag % (url, filename))
+        elif 'filename' in infos:
+            labels.append(infos['filename'])
+
+        if 'page_url' in infos:
+            url = html.escape(infos['page_url'])
+            labels.append(a_tag % (url, url))
+        elif 'archname' in infos:
+            labels.append(html.escape(infos['archname']))
+
+        if 'status' in infos:
+            labels.append(html.escape(infos['status']))
+
+        if 'error' in infos and infos['error']:
+            # if the status was empty drop it again when errors are there
+            # take its place
+            if not labels[-1]:
+                labels.pop()
+            error = infos['error']
+            if isinstance(error, list):
+                errmsg = html.escape('\n'.join(error))
+                labels.append('<pre>%s</pre>' % errmsg)
+            else:
+                labels.append(html.escape(error))
+
+        self.label.setText('<br />'.join(labels))
+        self.label.resize(self.label.sizeHint())
 
 
 if __name__ == "__main__":

@@ -34,7 +34,8 @@ class WebIO(BytesIO):
     ssl_context = ssl._create_unverified_context()
     re_charset = re.compile(r'charset=([\w-]+)')
     user_agent = 'Mozilla/5.0 (X11; U; Linux i686) Gecko/20071127 Firefox/2.0.0.11'
-    
+    forwarded_for = None
+
     @staticmethod
     def iriToUri(iri):
         return urlunparse([quote(c) if i == 2 else c for i, c in enumerate(urlparse(iri))])
@@ -95,7 +96,7 @@ class WebIO(BytesIO):
         except socket.error as err:
             raise WebIOError(str(err))
 
-        BytesIO.__init__(self,raw)
+        super().__init__(raw)
 
     def tostring(self):
         raw_bytes = self.getvalue()
@@ -208,7 +209,7 @@ class ImageParser(HTMLParser):
         if image_url is None:
             raise WebIOError('No Image found at "%s"' % self.page_url)
 
-        return WebImage([image_url],self.page_url,next_page)
+        return WebImage([image_url.strip()],self.page_url,next_page)
 
     def _fullpath(self,url):
         purl = urlparse(url)
@@ -285,15 +286,19 @@ class WebWrapper(BaseWrapper):
         if fileinfo == self.filelist[-1]:
             self.load_next()
 
-
+        stack = None, None, None
         for curl in fileinfo.alt_urls:
             try:
                 fileinfo.image_url = curl
                 return WebIO(curl)
             except WebIOError:
-                None
+                stack = sys.exc_info()
 
-        reraise(*sys.exc_info())
+        if stack[-1] is not None:
+            reraise(*stack)
+        else:
+            raise WebIOError('Unexpectedly reached code')
+
 
     def close(self):
         pass
@@ -328,13 +333,13 @@ class WebWrapper(BaseWrapper):
         return images
 
     def _builditem(self, itag, url, next_url):
-        curls = [self._fullpath(itag['src'], url)]
+        curls = [self._fullpath(itag['src'].strip(), url)]
         onerror = itag.get('onerror', '')
         assign = 'this.src='
         if onerror.startswith(assign):
             curl = onerror[len(assign):].strip().strip("'\"")
             curl = self._fullpath(curl, url)
-            curls.append(curl)
+            curls.append(curl.strip())
 
         return WebImage(curls, url, next_url)
 
