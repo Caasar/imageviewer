@@ -5,14 +5,14 @@ from __future__ import division, print_function
 import sys
 
 try:
-    import PySide
-    sys.modules['PyQt4'] = PySide # HACK for ImageQt
-    from PySide import QtCore, QtGui
+    from PyQt5 import QtCore, QtGui, QtWidgets
+    QtCore.Signal = QtCore.pyqtSignal
 except ImportError:
     from PyQt4 import QtCore, QtGui
+    from PyQt4 import QtGui as QtWidgets
     QtCore.Signal = QtCore.pyqtSignal
 
-import os,re,cgi
+import os,re,html
 import math
 from ast import literal_eval
 from six import text_type, itervalues, iteritems
@@ -42,9 +42,9 @@ def open_wrapper(path):
     return farch
 
 
-class WebProfileSettings(QtGui.QDialog):
-    def __init__(self, *args):
-        super(WebProfileSettings,self).__init__(*args)
+class WebProfileSettings(QtWidgets.QDialog):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
         # setGeometry(x_pos, y_pos, width, height)
         self.setWindowModality(QtCore.Qt.ApplicationModal)
         self.setWindowFlags(QtCore.Qt.Dialog|QtCore.Qt.FramelessWindowHint)
@@ -52,10 +52,10 @@ class WebProfileSettings(QtGui.QDialog):
         #self.setWindowTitle(self.tr("Parser"))
         self.setFixedWidth(400)
 
-        profile = QtGui.QComboBox(self,editable=True)
-        page_url = QtGui.QLineEdit(self)
-        img_url = QtGui.QLineEdit(self)
-        next_url = QtGui.QLineEdit(self)
+        profile = QtWidgets.QComboBox(self,editable=True)
+        page_url = QtWidgets.QLineEdit(self)
+        img_url = QtWidgets.QLineEdit(self)
+        next_url = QtWidgets.QLineEdit(self)
 
         profile.activated.connect(self.load_profile)
         profile.addItems(list(WebWrapper.profiles.keys()))
@@ -67,24 +67,24 @@ class WebProfileSettings(QtGui.QDialog):
         img_url.setToolTip(self.tr("CSS Selector for image element."))
         next_url.setToolTip(self.tr("CSS Selector for next page link."))
 
-        cancel_btn = QtGui.QPushButton(self.tr("&Cancel"),self)
+        cancel_btn = QtWidgets.QPushButton(self.tr("&Cancel"),self)
         cancel_btn.clicked.connect(self.reject)
-        ok_btn = QtGui.QPushButton(self.tr("&OK"),self)
+        ok_btn = QtWidgets.QPushButton(self.tr("&OK"),self)
         ok_btn.clicked.connect(self.accept)
 
-        hbox = QtGui.QHBoxLayout()
+        hbox = QtWidgets.QHBoxLayout()
         hbox.addStretch()
         hbox.addWidget(ok_btn)
         hbox.addWidget(cancel_btn)
 
-        layout = QtGui.QFormLayout()
+        layout = QtWidgets.QFormLayout()
         layout.addRow(self.tr("&Profile:"),profile)
         layout.addRow(self.tr("&Url:"),page_url)
         layout.addRow(self.tr("&Image filter:"),img_url)
         layout.addRow(self.tr("&Next url filter:"),next_url)
 
         if 'bs4' not in sys.modules:
-            label = QtGui.QLabel(self.tr("Could not load BeautifulSoup4. "\
+            label = QtWidgets.QLabel(self.tr("Could not load BeautifulSoup4. "\
                                          "'Only defaut webparser available."))
             label.setStyleSheet("QLabel { color : red; }")
             profile.setDisabled(True)
@@ -119,7 +119,12 @@ class WebProfileSettings(QtGui.QDialog):
 
     def update_profile(self):
         profile = self.profile.currentText()
+        print('update_profile', profile)
         if profile:
+            if profile not in self.profiles:
+                print('addItem')
+                self.profile.addItem(profile)
+                print('addItem')
             prof = self.profiles.setdefault(profile, {})
             prof['url'] = self.page_url.text()
             prof['img'] = self.img_url.text()
@@ -133,7 +138,7 @@ class WebProfileSettings(QtGui.QDialog):
         super(WebProfileSettings,self).accept()
 
 
-class Settings(QtGui.QDialog):
+class Settings(QtWidgets.QDialog):
     settings = {'shorttimeout':1000,'longtimeout':2000, 'requiredoverlap':50,
                 'preload':5,'buffernumber':10,
                 'bgcolor': QtGui.QColor(QtCore.Qt.white),
@@ -146,22 +151,22 @@ class Settings(QtGui.QDialog):
     settings = Tuple(**settings)
 
     def __init__(self, settings, parent=None):
-        super(Settings,self).__init__(parent)
+        super().__init__(parent=parent)
         self.setWindowModality(QtCore.Qt.ApplicationModal)
         self.setWindowFlags(QtCore.Qt.Dialog|QtCore.Qt.FramelessWindowHint)
         #self.resize(640, 80)
 
-        self.mergethreshold = QtGui.QLineEdit(self)
-        self.preload = QtGui.QLineEdit(self)
-        self.buffernumber = QtGui.QLineEdit(self)
-        self.scaling = QtGui.QTextEdit(self)
-        self.maxscale = QtGui.QLineEdit(self)
-        self.minscale = QtGui.QLineEdit(self)
-        self.shorttimeout = QtGui.QLineEdit(self)
-        self.longtimeout = QtGui.QLineEdit(self)
-        self.requiredoverlap = QtGui.QLineEdit(self)
-        self.overlap = QtGui.QLineEdit(self)
-        self.saveposition = QtGui.QCheckBox(self.tr("S&ave Position"),self)
+        self.mergethreshold = QtWidgets.QLineEdit(self)
+        self.preload = QtWidgets.QLineEdit(self)
+        self.buffernumber = QtWidgets.QLineEdit(self)
+        self.scaling = QtWidgets.QTextEdit(self)
+        self.maxscale = QtWidgets.QLineEdit(self)
+        self.minscale = QtWidgets.QLineEdit(self)
+        self.shorttimeout = QtWidgets.QLineEdit(self)
+        self.longtimeout = QtWidgets.QLineEdit(self)
+        self.requiredoverlap = QtWidgets.QLineEdit(self)
+        self.overlap = QtWidgets.QLineEdit(self)
+        self.saveposition = QtWidgets.QCheckBox(self.tr("S&ave Position"),self)
 
         self.mergethreshold.setValidator(QtGui.QIntValidator())
         self.preload.setValidator(QtGui.QIntValidator())
@@ -195,11 +200,11 @@ class Settings(QtGui.QDialog):
         self.saveposition.setToolTip(self.tr("Save the position in the archive"\
              " on exit and loads it at the next start"))
 
-        self.cancelbuttom = QtGui.QPushButton(self.tr("Cancel"),self)
+        self.cancelbuttom = QtWidgets.QPushButton(self.tr("Cancel"),self)
         self.cancelbuttom.clicked.connect(self.reject)
-        self.okbuttom = QtGui.QPushButton(self.tr("OK"),self)
+        self.okbuttom = QtWidgets.QPushButton(self.tr("OK"),self)
         self.okbuttom.clicked.connect(self.accept)
-        self.bgcolor_btm = QtGui.QPushButton('',self)
+        self.bgcolor_btm = QtWidgets.QPushButton('',self)
         self.bgcolor_btm.clicked.connect(self.select_color)
 
         self.setTabOrder(self.saveposition,self.scaling)
@@ -216,12 +221,12 @@ class Settings(QtGui.QDialog):
         self.setTabOrder(self.bgcolor_btm,self.okbuttom)
         self.setTabOrder(self.okbuttom,self.cancelbuttom)
 
-        hbox = QtGui.QHBoxLayout()
+        hbox = QtWidgets.QHBoxLayout()
         hbox.addStretch()
         hbox.addWidget(self.okbuttom)
         hbox.addWidget(self.cancelbuttom)
 
-        layout = QtGui.QFormLayout()
+        layout = QtWidgets.QFormLayout()
         layout.addRow(self.saveposition)
         layout.addRow(self.tr("Scalin&g:"),self.scaling)
         layout.addRow(self.tr("M&in. Scale (%):"),self.minscale)
@@ -275,7 +280,7 @@ class Settings(QtGui.QDialog):
         super(Settings,self).accept()
 
     def select_color(self):
-        self.bgcolor = QtGui.QColorDialog.getColor(self.bgcolor,self)
+        self.bgcolor = QtWidgets.QColorDialog.getColor(self.bgcolor,self)
         fmt = "QPushButton { background-color : rgba(%d,%d,%d,%d)}"
         style = fmt % self.bgcolor.getRgb()
         self.bgcolor_btm.setStyleSheet(style)
@@ -286,36 +291,36 @@ class Settings(QtGui.QDialog):
         cdict.update(settings)
         return cls.Tuple(**cdict)
 
-class PageSelect(QtGui.QDialog):
+class PageSelect(QtWidgets.QDialog):
     def __init__(self,parent=None):
-        super(PageSelect,self).__init__(parent)
+        super().__init__(parent=parent)
         self.setWindowModality(QtCore.Qt.ApplicationModal)
         self.setWindowFlags(QtCore.Qt.Dialog|QtCore.Qt.FramelessWindowHint)
         self.resize(640, 80)
         self.imagelist = []
 
-        self.page = QtGui.QLineEdit(self)
+        self.page = QtWidgets.QLineEdit(self)
         self.page.setMaximumWidth(50)
         self.page.setValidator(QtGui.QIntValidator())
         self.page.setAlignment(QtCore.Qt.AlignCenter)
         self.page.textChanged.connect(self.set_value)
-        self.slider = QtGui.QSlider(QtCore.Qt.Horizontal,self)
+        self.slider = QtWidgets.QSlider(QtCore.Qt.Horizontal,self)
         self.slider.setTickInterval(1)
         self.slider.setTickPosition(self.slider.TicksBelow)
         self.slider.setMinimum(1)
         self.slider.valueChanged.connect(self.set_value)
-        self.okbuttom = QtGui.QPushButton(self.tr("OK"),self)
+        self.okbuttom = QtWidgets.QPushButton(self.tr("OK"),self)
         self.okbuttom.clicked.connect(self.accept)
-        self.cancelbuttom = QtGui.QPushButton(self.tr("Cancel"),self)
+        self.cancelbuttom = QtWidgets.QPushButton(self.tr("Cancel"),self)
         self.cancelbuttom.clicked.connect(self.reject)
 
-        self.label = QtGui.QLabel(self)
+        self.label = QtWidgets.QLabel(self)
 
-        layout = QtGui.QHBoxLayout()
+        layout = QtWidgets.QHBoxLayout()
         layout.addWidget(self.slider)
         layout.addWidget(self.page)
 
-        mlayout = QtGui.QGridLayout()
+        mlayout = QtWidgets.QGridLayout()
         mlayout.setVerticalSpacing(0)
         mlayout.addLayout(layout,0,0)
         mlayout.addWidget(self.okbuttom,0,1)
@@ -355,7 +360,7 @@ class WorkerThread(QtCore.QThread):
     loaded = QtCore.Signal(int)
 
     def __init__(self, manager, pos):
-        super(WorkerThread,self).__init__(manager.viewer)
+        super().__init__(manager.viewer)
         self.manager = manager
         self.fileinfo = manager.imagelist[pos]
         self.pos = pos
@@ -830,8 +835,8 @@ class ImageManager(object):
         if self._to_show == page:
             self._to_show = None
             self.show_page(page)
-        else:
-            self._update_bookkeeping()
+
+        self._update_bookkeeping()
 
     def _update_bookkeeping(self):
         vis_page = self._to_show or self.page
@@ -924,7 +929,7 @@ class ImageManager(object):
     __nonzero__ = __bool__
 
 
-class ImageViewer(QtGui.QGraphicsView):
+class ImageViewer(QtWidgets.QGraphicsView):
     show_page_info = QtCore.Signal()
     show_status_info = QtCore.Signal()
 
@@ -938,10 +943,10 @@ QLabel {
 """
 
     def __init__(self,scene=None):
-        super(ImageViewer,self).__init__(scene)
+        super().__init__(scene)
         self.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
         self.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
-        self.setDragMode(QtGui.QGraphicsView.ScrollHandDrag)
+        self.setDragMode(QtWidgets.QGraphicsView.ScrollHandDrag)
         self.setWindowTitle(self.tr("Image Viewer"))
         self.setWindowIcon(APP_ICON)
         self.setFrameShape(self.NoFrame)
@@ -950,7 +955,7 @@ QLabel {
         self.dropping = DroppingThread(self)
         self.dropping.loaded_archive.connect(self.load_dropped_archive)
 
-        self.label = QtGui.QLabel(self.tr('Nothing to show<br \>'\
+        self.label = QtWidgets.QLabel(self.tr('Nothing to show<br \>'\
                                           'Open an image archive'), self)
         self.label.setStyleSheet(self.label_css)
         self.label.setOpenExternalLinks(True)
@@ -973,78 +978,78 @@ QLabel {
 
         actions = {}
         actions = {}
-        actions['open'] = QtGui.QAction(self.tr("&Open"), self,
+        actions['open'] = QtWidgets.QAction(self.tr("&Open"), self,
                         shortcut=QtGui.QKeySequence.Open,
                         statusTip=self.tr("Open a new file"),
                         triggered=self.action_open)
-        actions['settings'] = QtGui.QAction(self.tr("&Settings"), self,
+        actions['settings'] = QtWidgets.QAction(self.tr("&Settings"), self,
                         shortcut=QtGui.QKeySequence(QtCore.Qt.Key_S),
                         statusTip=self.tr("Open Settings"),
                         triggered=self.action_settings)
-        actions['webparser'] = QtGui.QAction(self.tr("&Web Parser"), self,
+        actions['webparser'] = QtWidgets.QAction(self.tr("&Web Parser"), self,
                         shortcut=QtGui.QKeySequence(QtCore.Qt.Key_W),
                         statusTip=self.tr("Settings for web parser"),
                         triggered=self.action_web_profile)
-        actions['reload'] = QtGui.QAction(self.tr("Reload Archive"), self,
+        actions['reload'] = QtWidgets.QAction(self.tr("Reload Archive"), self,
                          shortcut=QtGui.QKeySequence.Refresh,
                          statusTip=self.tr("Reload the current Archive"),
                          triggered=self.action_reload)
-        actions['next_file'] = QtGui.QAction(self.tr("Next Archive"), self,
+        actions['next_file'] = QtWidgets.QAction(self.tr("Next Archive"), self,
                          shortcut=QtGui.QKeySequence(QtCore.Qt.Key_L),
                          statusTip=self.tr("Load the next archive in the folder"),
                          triggered=self.action_next_file)
-        actions['prev_file'] = QtGui.QAction(self.tr("Previous Archive"), self,
+        actions['prev_file'] = QtWidgets.QAction(self.tr("Previous Archive"), self,
                          shortcut=QtGui.QKeySequence(QtCore.Qt.Key_K),
                          statusTip=self.tr("Load the previous archive in the folder"),
                          triggered=self.action_prev_file)
-        actions['next'] = QtGui.QAction(self.tr("Next View"), self,
+        actions['next'] = QtWidgets.QAction(self.tr("Next View"), self,
                          shortcut=QtGui.QKeySequence(QtCore.Qt.Key_Space),
                          statusTip=self.tr("Show next image part"),
                          triggered=self.manager.action_next)
-        actions['prev'] = QtGui.QAction(self.tr("Previous View"), self,
+        actions['prev'] = QtWidgets.QAction(self.tr("Previous View"), self,
                          shortcut=QtGui.QKeySequence("Shift+Space"),
                          statusTip=self.tr("Show previous image part"),
                          triggered=self.manager.action_prev)
-        actions['page'] = QtGui.QAction(self.tr("Select Page"), self,
+        actions['page'] = QtWidgets.QAction(self.tr("Select Page"), self,
                          shortcut=QtGui.QKeySequence(QtCore.Qt.Key_P),
                          statusTip=self.tr("Select the an image"),
                          triggered=self.action_page)
-        actions['info'] = QtGui.QAction(self.tr("Information"), self,
+        actions['info'] = QtWidgets.QAction(self.tr("Information"), self,
                          shortcut=QtGui.QKeySequence(QtCore.Qt.Key_I),
                          checkable=True,
                          statusTip=self.tr("Show informaion about image"),
                          triggered=self.action_info)
-        actions['first_image'] = QtGui.QAction(self.tr("First Image"), self,
+        actions['first_image'] = QtWidgets.QAction(self.tr("First Image"), self,
                          shortcut=QtGui.QKeySequence.MoveToStartOfLine,
                          statusTip=self.tr("Show first image"),
                          triggered=self.manager.action_first_image)
-        actions['last_image'] = QtGui.QAction(self.tr("Last Image"), self,
+        actions['last_image'] = QtWidgets.QAction(self.tr("Last Image"), self,
                          shortcut=QtGui.QKeySequence.MoveToEndOfLine,
                          statusTip=self.tr("Show last image"),
                          triggered=self.manager.action_last_image)
-        actions['next_image'] = QtGui.QAction(self.tr("Next Image"), self,
+        actions['next_image'] = QtWidgets.QAction(self.tr("Next Image"), self,
                          shortcut=QtGui.QKeySequence.MoveToNextPage,
                          statusTip=self.tr("Show next image"),
                          triggered=self.manager.action_next_image)
-        actions['prev_image'] = QtGui.QAction(self.tr("Previous Image"), self,
+        actions['prev_image'] = QtWidgets.QAction(self.tr("Previous Image"), self,
                          shortcut=QtGui.QKeySequence.MoveToPreviousPage,
                          statusTip=self.tr("Show previous image"),
                          triggered=self.manager.action_prev_image)
-        actions['continuous'] = QtGui.QAction(self.tr("Continuous"), self,
+        actions['continuous'] = QtWidgets.QAction(self.tr("Continuous"), self,
                          shortcut=QtGui.QKeySequence(QtCore.Qt.Key_C),
                          checkable=True,
                          statusTip=self.tr("Continuous Flow"),
                          triggered=self.action_toggle_continuous)
-        actions['fullscreen'] = QtGui.QAction(self.tr("Fullscreen"), self,
+        actions['fullscreen'] = QtWidgets.QAction(self.tr("Fullscreen"), self,
                          shortcut=QtGui.QKeySequence(QtCore.Qt.Key_F),
                          checkable=True,
                          statusTip=self.tr("Toggle Fullscreen"),
                          triggered=self.action_toggle_fullscreen)
-        actions['minimize'] = QtGui.QAction(self.tr("Minimize"), self,
+        actions['minimize'] = QtWidgets.QAction(self.tr("Minimize"), self,
                          shortcut=QtGui.QKeySequence(QtCore.Qt.Key_M),
                          statusTip=self.tr("Minimize Window"),
                          triggered=self.showMinimized)
-        actions['close'] = QtGui.QAction(self.tr("Close"), self,
+        actions['close'] = QtWidgets.QAction(self.tr("Close"), self,
                          shortcut=QtGui.QKeySequence(QtCore.Qt.Key_Escape),
                          statusTip=self.tr("Close Viewer"),
                          triggered=self.close)
@@ -1052,36 +1057,36 @@ QLabel {
         self.writing = []
         self.auto_writing = set()
         self.last_farchinfo = None
-        actions['save'] = QtGui.QAction(self.tr("Save as..."), self,
+        actions['save'] = QtWidgets.QAction(self.tr("Save as..."), self,
                          shortcut=QtGui.QKeySequence.Save,
                          statusTip=self.tr("Close Viewer"),
                          triggered=self.action_save)
         for i in range(1, 10):
             ckey = getattr(QtCore.Qt, 'Key_%d' % i)
-            caction = QtGui.QAction(self.tr("Append current image"), self,
+            caction = QtWidgets.QAction(self.tr("Append current image"), self,
                       shortcut=QtGui.QKeySequence(ckey),
                       triggered=partial(self.action_save_current, i-1))
             actions['append_to_%d' % i] = caction
-            caction = QtGui.QAction(self.tr("Automatically append current image"),
+            caction = QtWidgets.QAction(self.tr("Automatically append current image"),
                       self,
                       checkable=True,
                       triggered=partial(self.action_save_auto, i-1))
             actions['auto_%d' % i] = caction
-            caction = QtGui.QAction(self.tr("Close"), self,
+            caction = QtWidgets.QAction(self.tr("Close"), self,
                       triggered=partial(self.action_save_close, i-1))
             actions['close_%d' % i] = caction
 
 
-        actions['movement'] = QtGui.QActionGroup(self)
+        actions['movement'] = QtWidgets.QActionGroup(self)
         actions['movement'].triggered.connect(self.action_movement)
         for mover in self.manager.movers:
-            act = QtGui.QAction(self.tr(mover), actions['movement'],
+            act = QtWidgets.QAction(self.tr(mover), actions['movement'],
                                 checkable=True)
             if mover == self.manager.mover:
                 act.setChecked(True)
 
         for act in itervalues(actions):
-            if isinstance(act,QtGui.QAction):
+            if isinstance(act, QtWidgets.QAction):
                 self.addAction(act)
         self.actions = actions
 
@@ -1096,7 +1101,7 @@ QLabel {
 
         except WrapperIOError as err:
             errormsg = text_type(err) or self.tr("Unknown Error")
-            errormsg = cgi.escape(errormsg)
+            errormsg = html.escape(errormsg)
             self.label.setText(errormsg)
             self.label.resize(self.label.sizeHint())
             self.label.show()
@@ -1128,7 +1133,7 @@ QLabel {
 
         except WrapperIOError as err:
             errormsg = text_type(err) or self.tr("Unknown Error")
-            errormsg = cgi.escape(errormsg)
+            errormsg = html.escape(errormsg)
             self.label.setText(errormsg)
             self.label.resize(self.label.sizeHint())
             self.label.show()
@@ -1142,12 +1147,10 @@ QLabel {
 
     def resize_view(self):
         self.resizetimer.stop()
-        self.manager.clearBuffers()
-        if self.imagelist:
-            self.action_queued_image(self.cur,self._mv_start)
+        self.manager.refresh()
 
     def contextMenuEvent(self, event):
-        menu = QtGui.QMenu(self)
+        menu = QtWidgets.QMenu(self)
         menu.addAction(self.actions['open'])
 
         sv_menu = menu.addMenu(self.tr('Save'))
@@ -1269,7 +1272,7 @@ QLabel {
                     self.auto_writing.add(farch)
             except WrapperIOError as err:
                 errormsg = text_type(err) or self.tr("Unkown Error")
-                errormsg = cgi.escape(errormsg)
+                errormsg = html.escape(errormsg)
                 self.label.setText(errormsg)
                 self.label.resize(self.label.sizeHint())
                 self.label.show()
@@ -1350,8 +1353,8 @@ QLabel {
             page = infos['page']
             page_count = infos['page_count']
             if infos['error']:
-                error = cgi.escape(infos['error'])
-                infostr = u'%d/%d<br />' % (page+1, page_count, error)
+                error = html.escape(infos['error'])
+                infostr = u'%d/%d<br />%s' % (page+1, page_count, error)
             else:
                 infostr = u'%d/%d' % (page+1, page_count)
             self.label.setText(infostr)
@@ -1387,20 +1390,20 @@ QLabel {
                 labels.append(fmt % tuple(tpl))
 
             if 'image_url' in infos:
-                url = cgi.escape(infos['image_url'])
-                filename = cgi.escape(infos['filename'])
+                url = html.escape(infos['image_url'])
+                filename = html.escape(infos['filename'])
                 labels.append(a_tag % (url, filename))
             elif 'filename' in infos:
                 labels.append(infos['filename'])
 
             if 'page_url' in infos:
-                url = cgi.escape(infos['page_url'])
+                url = html.escape(infos['page_url'])
                 labels.append(a_tag % (url, url))
             elif 'archname' in infos:
-                labels.append(cgi.escape(infos['archname']))
+                labels.append(html.escape(infos['archname']))
 
             if 'status' in infos:
-                labels.append(cgi.escape(infos['status']))
+                labels.append(html.escape(infos['status']))
 
             self.label.setText('<br />'.join(labels))
             self.label.resize(self.label.sizeHint())
@@ -1453,7 +1456,7 @@ QLabel {
                 errormsg = self.tr('No further archives in "%s"') % folder
 
         if errormsg:
-            errormsg = cgi.escape(errormsg)
+            errormsg = html.escape(errormsg)
             self.label.setText(errormsg)
             self.label.resize(self.label.sizeHint())
             self.label.show()
@@ -1475,7 +1478,7 @@ QLabel {
                 errormsg = self.tr('No previous archives in "%s"') % folder
 
         if errormsg:
-            errormsg = cgi.escape(errormsg)
+            errormsg = html.escape(errormsg)
             self.label.setText(errormsg)
             self.label.resize(self.label.sizeHint())
             self.label.show()
@@ -1541,7 +1544,7 @@ QLabel {
         self.scene().setBackgroundBrush(self.settings.bgcolor)
 
         settings.beginGroup("WebProfiles")
-        for profile in settings.childKeys():
+        for profile in settings.allKeys():
             values = literal_eval(settings.value(profile))
             prof = dict(zip(WebWrapper.profile_keys, values))
             if len(values) == len(WebWrapper.profile_keys):
@@ -1563,9 +1566,9 @@ QLabel {
 
 
 if __name__ == "__main__":
-    app = QtGui.QApplication(sys.argv[:1])
+    app = QtWidgets.QApplication(sys.argv[:1])
     APP_ICON = QtGui.QIcon('res/image.png')
-    scene = QtGui.QGraphicsScene()
+    scene = QtWidgets.QGraphicsScene()
     view = ImageViewer(scene)
     if view.load_settings():
         view.showFullScreen()
@@ -1575,4 +1578,3 @@ if __name__ == "__main__":
     if len(sys.argv) > 1:
         view.load_archive(sys.argv[1])
     sys.exit(app.exec_())
-
