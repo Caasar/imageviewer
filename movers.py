@@ -60,8 +60,9 @@ def crop_image(img, prevImg, thr=50.0, min_lines=25, stop_thr=150):
 
 
 class BaseMover(object):
-    MinValue = 245
+    MaxIRange = 15
     FilterLen = 5
+    MinRho = 0.8
 
     def __init__(self, viewer, name):
         self.viewer = viewer
@@ -133,9 +134,34 @@ class BaseMover(object):
             return [], []
 
         arr = np.asarray(img.convert('L'))
-        structure = np.ones(self.FilterLen, np.bool)
-        isw = ndimage.binary_opening(arr.min(1) > self.MinValue,
-                                     structure=structure)
+        # find the intensity range for each row
+        arrMin = arr.min(1).astype(np.int16)
+        arrMax = arr.max(1).astype(np.int16)
+        arrRange = arrMax - arrMin
+        # ensure minimal range for each row is >= MaxIRange to ensure
+        # a stable calculation of the correlation coeficient
+        arrOff = np.maximum(self.MaxIRange - arrRange, 0) // 2
+        arrMin -= arrOff
+        arrMax += arrOff
+        # build the reference intensity range based on the center
+        # of the two neighbouring rows
+        refCenter = np.empty_like(arrMin)
+        refCenter[1:-1] = arrMax[:-2] + arrMax[2:] + arrMin[:-2] + arrMin[2:]
+        refCenter >>= 2
+        refCenter[0] = (arrMax[1] + arrMin[1]) // 2
+        refCenter[-1] = (arrMax[-2] + arrMin[-2]) // 2
+        refMin = refCenter - self.MaxIRange // 2
+        refMax = refCenter + self.MaxIRange // 2
+        # calculate the correlation coeficient rho
+        compMin = np.maximum(arrMin, refMin)
+        compMax = np.minimum(arrMax, refMax)
+        compRange = np.maximum(compMax - compMin, 0)
+        rhos = compRange / np.sqrt(self.MaxIRange * (arrMax - arrMin))
+        # consider rows with a rho larger than MinRho to be background
+        # and use a binary openinig to remove noise detecions
+        isw = ndimage.binary_opening(rhos > self.MinRho,
+                                     structure=np.ones(self.FilterLen, bool))
+        # find the start and stop index for the background rows
         start = np.flatnonzero(isw[:-1] & (~isw[1:])) - self.FilterLen + 1
         stop = np.flatnonzero((~isw[:-1]) & isw[1:]) + self.FilterLen + 1
         return start.tolist(), stop.tolist()
