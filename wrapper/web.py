@@ -10,6 +10,7 @@ import os
 import re
 import gzip
 import socket
+import ssl
 from io import BytesIO
 from six import text_type, reraise
 from six.moves.html_parser import HTMLParser
@@ -30,6 +31,7 @@ class WebIOError(WrapperIOError):
     pass
 
 class WebIO(BytesIO):
+    ssl_context = ssl._create_unverified_context()
     re_charset = re.compile(r'charset=([\w-]+)')
     user_agent = 'Mozilla/5.0 (X11; U; Linux i686) Gecko/20071127 Firefox/2.0.0.11'
     
@@ -46,23 +48,23 @@ class WebIO(BytesIO):
                 request.add_header('X-Forwarded-For', self.forwarded_for)
             if data:
                 request.add_data(data)
-                
-            response  = urlopen(request)
+
+            response  = urlopen(request, context=self.ssl_context)
         except:
             try:
                 url = self.iriToUri(url)
-    
+
                 request = Request(url)
                 request.add_header('Accept-encoding', 'gzip')
-                request.add_header('User-Agent',self.user_agent) 
+                request.add_header('User-Agent',self.user_agent)
                 if data:
                     request.add_data(data)
-                    
-                response  = urlopen(request)
+
+                response  = urlopen(request, context=self.ssl_context)
                 print('opened 2nd', url)
             except Exception as err:
                 raise WebIOError(str(err))
-        
+
         try:
             if response.headers.get('Content-Encoding',''):
                 zipped = BytesIO(response.read())
@@ -76,9 +78,9 @@ class WebIO(BytesIO):
                 self.charset = m.group(1)
             else:
                 self.charset = 'utf8'
-                
+
             response.close()
-            
+
         except HTTPError as err:
             if not str(err):
                 dummy, msg = BaseHTTPRequestHandler.responses[err.code]
@@ -94,7 +96,7 @@ class WebIO(BytesIO):
             raise WebIOError(str(err))
 
         BytesIO.__init__(self,raw)
-    
+
     def tostring(self):
         raw_bytes = self.getvalue()
         try:
@@ -104,7 +106,7 @@ class WebIO(BytesIO):
                 content = raw_bytes.decode('utf8')
             except UnicodeDecodeError:
                 content = raw_bytes.decode('latin1')
-                
+
         return content
 
 
@@ -116,20 +118,20 @@ class WebImage(object):
         self.page_url = page_url
         self.next_page = next_page
         self.filename = filename or self.image_url
-        
+
     def __hash__(self):
         return hash(self.image_url)
-        
+
 
 class ImageParser(HTMLParser):
     filtered = {'.gif'}
     minlength = 50000
-    
+
     def __init__(self,url):
         super(HTMLParser, self).__init__()
         self.saved_link = None
         self.imgs_lists = [list() for dummy in range(8)]
-                 
+
         self.page_url = url
         self.page_purl = urlparse(url)
         part = '/'.join(p for p in self.page_purl.path.split('/')[:-1] if p)
@@ -137,7 +139,7 @@ class ImageParser(HTMLParser):
             self.base_path = '/%s/' % part
         else:
             self.base_path = '/'
-            
+
         with WebIO(url) as furl:
             try:
                 raw_bytes = furl.read()
@@ -151,7 +153,7 @@ class ImageParser(HTMLParser):
                 self.feed(content)
             except Exception as err:
                 WebIOError(text_type(err))
-                
+
     def handle_starttag(self,tag,attrs):
         if tag == 'a':
             self.start_a(attrs)
@@ -161,27 +163,27 @@ class ImageParser(HTMLParser):
     def handle_endtag(self,tag):
         if tag == 'a':
             self.end_a()
-            
+
     def start_a(self,info=None):
         try:
             elements = dict(info)
             purl = self._fullpath(elements['href'])
             if purl.netloc == self.page_purl.netloc:
                 self.saved_link = purl.geturl()
-                
+
         except KeyError:
             pass
-        
+
         if self.saved_link == self.page_url:
             self.saved_link = None
-        
+
     def end_a(self):
         self.saved_link = None
-        
+
     def do_img(self,info):
         elements = dict(info)
         if 'src' in elements:
-            purl = self._fullpath(elements['src']) 
+            purl = self._fullpath(elements['src'])
             src = purl.geturl()
             name, ext = os.path.splitext(purl.path)
             filtered = ext.lower() in self.filtered
@@ -192,22 +194,22 @@ class ImageParser(HTMLParser):
     def find_image(self):
         image_url = None
         maxsize = -1
-        
+
         for img_list in self.imgs_lists:
             for c_url, c_next in img_list:
                 c_size = int(ImageParser.get_content_length(c_url))
                 if maxsize < c_size:
                     image_url, next_page = c_url, c_next
                     maxsize = c_size
-                
+
             if maxsize > self.minlength:
                 break
-            
+
         if image_url is None:
             raise WebIOError('No Image found at "%s"' % self.page_url)
-            
+
         return WebImage([image_url],self.page_url,next_page)
-        
+
     def _fullpath(self,url):
         purl = urlparse(url)
         furl = list(purl)
@@ -217,29 +219,29 @@ class ImageParser(HTMLParser):
             furl[1] = self.page_purl.netloc
             if not purl.path or purl.path[0] != '/':
                 furl[2] = self.base_path + purl.path
-                
+
         return ParseResult(*furl)
-        
+
     @staticmethod
     def get_content_length(url):
         request = Request(url)
         request.add_header('User-Agent',WebIO.user_agent)
         request.get_method = lambda: "HEAD"
         try:
-            response = urlopen(request)
+            response = urlopen(request, context=WebIO.ssl_context)
             length = response.headers.get("content-length",0)
             response.close()
         except HTTPError:
             length = 0
         except ValueError:
             length = 0
-            
+
         return length
 
 class WebWrapper(BaseWrapper):
     profiles = dict()
     profile_keys = ['url', 'img', 'next']
-    
+
     def __init__(self,url):
         self.path = url
         self.mode = 'r'
@@ -250,24 +252,24 @@ class WebWrapper(BaseWrapper):
             if 'bs4' in sys.modules and re.match(paths['url'], url):
                 self.sel_img = paths['img']
                 self.sel_next = paths['next']
-        
-        if self.sel_img and self.sel_next:
+
+        if self.sel_img:
             self._filelist = self._parse_url(url)
         else:
             self._filelist = [ImageParser(url).find_image()]
-    
+
     @property
     def filelist(self):
         return self._filelist
-    
+
     def filter_images(self):
         return self.filelist
-        
+
     def load_next(self):
         lastinfo = self.filelist[-1]
         if lastinfo.next_page:
             try:
-                if self.sel_img and self.sel_next:
+                if self.sel_img:
                     nextinfos = self._parse_url(lastinfo.next_page)
                     self.filelist.extend(nextinfos)
                 else:
@@ -275,36 +277,36 @@ class WebWrapper(BaseWrapper):
                     self.filelist.append(nextinfo)
             except WebIOError:
                 pass
-                
+
     def open(self,fileinfo,mode):
         if mode in {'a','w'} and self.mode[0] == 'r':
             raise WebIOError('Child mode does not fit to mode of Archive')
-        
+
         if fileinfo == self.filelist[-1]:
             self.load_next()
-            
-        
+
+
         for curl in fileinfo.alt_urls:
             try:
                 fileinfo.image_url = curl
                 return WebIO(curl)
             except WebIOError:
                 None
-                
+
         reraise(*sys.exc_info())
-        
+
     def close(self):
         pass
-        
+
     def list_archives(self):
         return [], 0
-        
+
     def _parse_url(self, url):
         with WebIO(url) as f_url:
             html_doc = f_url.tostring()
-            
+
         soup = BeautifulSoup(html_doc, "lxml")
-        
+
         try:
             nodes = bs4_select(soup, self.sel_next)
         except SelectorError as err:
@@ -316,15 +318,15 @@ class WebWrapper(BaseWrapper):
             nodes = bs4_select(soup, self.sel_img)
         except SelectorError as err:
             raise WebIOError('BeautifulSoup parse error: %s' % err.message)
-            
+
         images = [self._builditem(node, url, next_url) for node in nodes]
-        
+
         if not images:
             print('No image found at %r with selector %r' % (url, self.sel_img))
             raise WebIOError("Could not find image in '%s'" % url)
-        
+
         return images
-        
+
     def _builditem(self, itag, url, next_url):
         curls = [self._fullpath(itag['src'], url)]
         onerror = itag.get('onerror', '')
@@ -333,14 +335,14 @@ class WebWrapper(BaseWrapper):
             curl = onerror[len(assign):].strip().strip("'\"")
             curl = self._fullpath(curl, url)
             curls.append(curl)
-            
+
         return WebImage(curls, url, next_url)
 
     @staticmethod
     def _fullpath(url, parent_url):
         if not url:
             return ''
-            
+
         purl = urlparse(url)
         parent_purl = urlparse(parent_url)
         part = '/'.join(p for p in parent_purl.path.split('/')[:-1] if p)
@@ -356,6 +358,6 @@ class WebWrapper(BaseWrapper):
             furl[1] = parent_purl.netloc
             if not purl.path or purl.path[0] != '/':
                 furl[2] = parent_base + purl.path
-                
+
         return ParseResult(*furl).geturl()
-    
+
