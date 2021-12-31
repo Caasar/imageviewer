@@ -333,7 +333,11 @@ class WebWrapper(BaseWrapper):
         return images
 
     def _builditem(self, itag, url, next_url):
-        curls = [self._fullpath(itag['src'].strip(), url)]
+        curls = []
+        if 'src' in itag.attrs:
+            curls.append(self._fullpath(itag['src'].strip(), url))
+        elif 'data-src' in itag.attrs:
+            curls.append(self._fullpath(itag['data-src'].strip(), url))
         onerror = itag.get('onerror', '')
         assign = 'this.src='
         if onerror.startswith(assign):

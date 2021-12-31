@@ -18,7 +18,7 @@ KNOWN_ARCHIVES.update({'.zip','.cbz'})
 
 class Handle7z(object):
     FileType = namedtuple('FileType', ('filename', ))
-    re_row = re.compile(r'^\d+-\d+-\d+ \d+:\d+:\d+\s+\.\.\.\.A\s+\d+\s+\d+')
+    re_row = re.compile(r'^\d+-\d+-\d+ \d+:\d+:\d+\s+\.\.\.\.[\.A]\s+\d+\s+\d+')
     filelist_cmd = '7z.exe', '-ba', 'l', '--'
     fileread_cmd = '7z.exe', '-so', 'e', '--'
     formats = {'.7z', '.ar', '.arj', '.bzip2', '.cab', '.chm', '.cpio',
@@ -78,9 +78,9 @@ class ArchiveIO(BytesIO):
             try:
                 init = parent.handle.read(fileinfo)
             except KeyError:
-                init = ''
+                init = b''
         else:
-            init = ''
+            init = b''
         super().__init__(init)
         self._parent = parent
         self._mode = mode

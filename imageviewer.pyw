@@ -1293,9 +1293,9 @@ QLabel {
         elif 'archpath' in infos:
             fpath, name = os.path.split(infos['archpath'])
 
-        path, dummy = QtGui.QFileDialog.getSaveFileName(self,
-                                                        dir=fpath,
-                                                        filter=archives)
+        path, dummy = QtWidgets.QFileDialog.getSaveFileName(self,
+                                                            directory=fpath,
+                                                            filter=archives)
         if path:
             try:
                 farch = ArchiveWrapper(path, 'w')
@@ -1312,7 +1312,7 @@ QLabel {
 
     def action_save_current(self, archive_ind):
         infos = self.manager.page_description
-        if archive_ind >= self.writing or 'filename' not in infos:
+        if archive_ind >= len(self.writing) or 'filename' not in infos:
             return
 
         base, filename = os.path.split(infos['filename'])
@@ -1334,7 +1334,7 @@ QLabel {
             self.labeltimer.start(self.settings.longtimeout)
 
     def action_save_auto(self, archive_ind):
-        if archive_ind >= self.writing:
+        if archive_ind >= len(self.writing):
             return
 
         farch = self.writing[archive_ind]
@@ -1345,7 +1345,7 @@ QLabel {
             self.auto_writing.add(farch)
 
     def action_save_close(self, archive_ind):
-        if archive_ind >= self.writing:
+        if archive_ind >= len(self.writing):
             return
 
         farch = self.writing.pop(archive_ind)
