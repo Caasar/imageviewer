@@ -164,7 +164,21 @@ class BaseMover(object):
         # find the start and stop index for the background rows
         start = np.flatnonzero(isw[:-1] & (~isw[1:])) - self.FilterLen + 1
         stop = np.flatnonzero((~isw[:-1]) & isw[1:]) + self.FilterLen + 1
-        return start.tolist(), stop.tolist()
+        start = start.tolist()
+        stop = stop.tolist()
+
+        if not np.all(isw):
+            if len(start) == 0:
+                start.insert(0, 0)
+            if len(stop) == 0:
+                stop.append(len(arr))
+
+            if start[0] > stop[0]:
+                start.insert(0, 0)
+            if stop[-1] < start[-1]:
+                stop.append(len(arr))
+
+        return start, stop
 
 
     def set_segments(self, tops, bottoms):
