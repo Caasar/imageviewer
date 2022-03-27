@@ -8,18 +8,13 @@ Created on Sat Nov 11 18:56:09 2017
 import sys
 import os
 import re
-import gzip
-import socket
-import ssl
 from io import BytesIO
-from six import text_type, reraise
+from six import text_type
 from six.moves.html_parser import HTMLParser
-from six.moves.urllib.request import urlopen, Request
-from six.moves.urllib.error import HTTPError, URLError
-from six.moves.BaseHTTPServer import BaseHTTPRequestHandler
-from six.moves.urllib.parse import urlparse, ParseResult, urlunparse, quote
+from six.moves.urllib.parse import urlparse, ParseResult
 from .base import WrapperIOError, BaseWrapper
 import PIL.Image as Image
+import requests
 
 try:
     from bs4 import BeautifulSoup
@@ -29,86 +24,6 @@ except ImportError:
 
 class WebIOError(WrapperIOError):
     pass
-
-class WebIO(BytesIO):
-    ssl_context = ssl._create_unverified_context()
-    re_charset = re.compile(r'charset=([\w-]+)')
-    user_agent = 'Mozilla/5.0 (X11; U; Linux i686) Gecko/20071127 Firefox/2.0.0.11'
-    forwarded_for = None
-
-    @staticmethod
-    def iriToUri(iri):
-        return urlunparse([quote(c) if i == 2 else c for i, c in enumerate(urlparse(iri))])
-
-    def __init__(self,url,data=None):
-        try:
-            request = Request(url)
-            request.add_header('Accept-encoding', 'gzip')
-            request.add_header('User-Agent',self.user_agent)
-            if self.forwarded_for:
-                request.add_header('X-Forwarded-For', self.forwarded_for)
-            if data:
-                request.add_data(data)
-
-            response  = urlopen(request, context=self.ssl_context)
-        except:
-            try:
-                url = self.iriToUri(url)
-
-                request = Request(url)
-                request.add_header('Accept-encoding', 'gzip')
-                request.add_header('User-Agent',self.user_agent)
-                if data:
-                    request.add_data(data)
-
-                response  = urlopen(request, context=self.ssl_context)
-                print('opened 2nd', url)
-            except Exception as err:
-                raise WebIOError(str(err))
-
-        try:
-            if response.headers.get('Content-Encoding',''):
-                zipped = BytesIO(response.read())
-                with gzip.GzipFile(fileobj=zipped) as gzip_handle:
-                    raw = gzip_handle.read()
-            else:
-                raw = response.read()
-
-            m = self.re_charset.search(response.headers.get('Content-Type',''))
-            if m:
-                self.charset = m.group(1)
-            else:
-                self.charset = 'utf8'
-
-            response.close()
-
-        except HTTPError as err:
-            if not str(err):
-                dummy, msg = BaseHTTPRequestHandler.responses[err.code]
-                msg = '%d - %s' % (err.code, msg)
-                raise WebIOError(msg)
-            else:
-                raise WebIOError(str(err))
-        except URLError as err:
-            raise WebIOError(str(err))
-        except ValueError as err:
-            raise WebIOError(str(err))
-        except socket.error as err:
-            raise WebIOError(str(err))
-
-        super().__init__(raw)
-
-    def tostring(self):
-        raw_bytes = self.getvalue()
-        try:
-            content = raw_bytes.decode(self.charset)
-        except UnicodeDecodeError:
-            try:
-                content = raw_bytes.decode('utf8')
-            except UnicodeDecodeError:
-                content = raw_bytes.decode('latin1')
-
-        return content
 
 
 class WebImage(object):
@@ -128,7 +43,7 @@ class ImageParser(HTMLParser):
     filtered = {'.gif'}
     minlength = 50000
 
-    def __init__(self,url):
+    def __init__(self, url):
         super(HTMLParser, self).__init__()
         self.saved_link = None
         self.imgs_lists = [list() for dummy in range(8)]
@@ -141,19 +56,12 @@ class ImageParser(HTMLParser):
         else:
             self.base_path = '/'
 
-        with WebIO(url) as furl:
-            try:
-                raw_bytes = furl.read()
-                try:
-                    content = raw_bytes.decode(furl.charset)
-                except UnicodeDecodeError:
-                    try:
-                        content = raw_bytes.decode('utf8')
-                    except UnicodeDecodeError:
-                        content = raw_bytes.decode('latin1')
-                self.feed(content)
-            except Exception as err:
-                WebIOError(text_type(err))
+        try:
+            with requests.get(url) as response:
+                response.raise_for_status()
+                self.feed(response.text)
+        except Exception as err:
+            WebIOError(text_type(err))
 
     def handle_starttag(self,tag,attrs):
         if tag == 'a':
@@ -225,19 +133,13 @@ class ImageParser(HTMLParser):
 
     @staticmethod
     def get_content_length(url):
-        request = Request(url)
-        request.add_header('User-Agent',WebIO.user_agent)
-        request.get_method = lambda: "HEAD"
         try:
-            response = urlopen(request, context=WebIO.ssl_context)
-            length = response.headers.get("content-length",0)
-            response.close()
-        except HTTPError:
+            with requests.head(url) as request:
+                length = int(request.headers.get("content-length",0))
+        except Exception:
             length = 0
-        except ValueError:
-            length = 0
-
         return length
+
 
 class WebWrapper(BaseWrapper):
     profiles = dict()
@@ -286,18 +188,13 @@ class WebWrapper(BaseWrapper):
         if fileinfo == self.filelist[-1]:
             self.load_next()
 
-        stack = None, None, None
         for curl in fileinfo.alt_urls:
-            try:
-                fileinfo.image_url = curl
-                return WebIO(curl)
-            except WebIOError:
-                stack = sys.exc_info()
+            with requests.get(curl) as resp:
+                resp.raise_for_status()
+                if resp.headers.get('content-type', '').startswith('image/'):
+                    return BytesIO(resp.content)
 
-        if stack[-1] is not None:
-            reraise(*stack)
-        else:
-            raise WebIOError('Unexpectedly reached code')
+        raise WebIOError(f'Could not open image at "{fileinfo.image_url}"')
 
 
     def close(self):
@@ -307,8 +204,11 @@ class WebWrapper(BaseWrapper):
         return [], 0
 
     def _parse_url(self, url):
-        with WebIO(url) as f_url:
-            html_doc = f_url.tostring()
+        try:
+            with requests.get(url) as resp:
+                html_doc = resp.text
+        except Exception as e:
+            raise WebIOError(str(e))
 
         soup = BeautifulSoup(html_doc, "lxml")
 
