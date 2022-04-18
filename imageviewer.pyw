@@ -457,6 +457,8 @@ QLabel {
         super().show()
         if timeout is not None:
             self.timer.start(timeout)
+        else:
+            self.timer.stop()
 
     def hide(self):
         super().hide()
@@ -1473,7 +1475,6 @@ class ImageViewer(QtWidgets.QGraphicsView):
         if not self.manager:
             self.label.show(InfoBox.INFO, self.manager.status_info)
         elif self.actions['info'].isChecked():
-            self.label.timer.stop()
             self.label.show(InfoBox.INFO, self.manager.status_info)
         else:
             self.label.hide()
