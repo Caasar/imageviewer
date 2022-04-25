@@ -1521,10 +1521,7 @@ class ImageViewer(QtWidgets.QGraphicsView):
 
         if errormsg:
             errormsg = html.escape(errormsg)
-            self.label.setText(errormsg)
-            self.label.resize(self.label.sizeHint())
-            self.label.show()
-            self.labeltimer.start(self.settings.longtimeout)
+            self.label.show(InfoBox.ERROR, errormsg, self.settings.longtimeout)
 
 
     def action_prev_file(self):
@@ -1543,10 +1540,7 @@ class ImageViewer(QtWidgets.QGraphicsView):
 
         if errormsg:
             errormsg = html.escape(errormsg)
-            self.label.setText(errormsg)
-            self.label.resize(self.label.sizeHint())
-            self.label.show()
-            self.labeltimer.start(self.settings.longtimeout)
+            self.label.show(InfoBox.ERROR, errormsg, self.settings.longtimeout)
 
     def save_settings(self):
         isContinuous = self.actions['continuous'].isChecked()
