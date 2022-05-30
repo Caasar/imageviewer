@@ -210,7 +210,7 @@ class WebWrapper(BaseWrapper):
         except Exception as e:
             raise WebIOError(str(e))
 
-        soup = BeautifulSoup(html_doc, "lxml")
+        soup = BeautifulSoup(html_doc, "html.parser")
 
         try:
             nodes = bs4_select(soup, self.sel_next)
