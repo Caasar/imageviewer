@@ -23,6 +23,7 @@ from wrapper.archive import ArchiveWrapper
 from wrapper.pdf import PdfWrapper
 from wrapper.web import WebWrapper
 from movers import known_movers
+from pathlib import Path
 import PIL.Image as Image
 import PIL.ImageQt as ImageQt
 
@@ -142,7 +143,8 @@ class Settings(QtWidgets.QDialog):
                 'minscale':20, 'write_quality': 80, 'write_optimize':1,
                 'write_progressive':1,
                 'merge_threshold':50,
-                'scaling':'1000x1600=>0x1600\n1000x2200=>900x0'}
+                'scaling':'1000x1600=>0x1600\n1000x2200=>900x0',
+                'webcache': ''}
     Tuple = namedtuple('Settings', settings.keys())
     settings = Tuple(**settings)
 
@@ -163,6 +165,7 @@ class Settings(QtWidgets.QDialog):
         self.requiredoverlap = QtWidgets.QLineEdit(self)
         self.overlap = QtWidgets.QLineEdit(self)
         self.saveposition = QtWidgets.QCheckBox(self.tr("S&ave Position"),self)
+        self.webcache = QtWidgets.QLineEdit(self)
 
         self.mergethreshold.setValidator(QtGui.QIntValidator())
         self.preload.setValidator(QtGui.QIntValidator())
@@ -195,13 +198,18 @@ class Settings(QtWidgets.QDialog):
              "part is visible after advancing to the next one."))
         self.saveposition.setToolTip(self.tr("Save the position in the archive"\
              " on exit and loads it at the next start"))
+        self.webcache.setToolTip(self.tr("The folder into which all downloaded "
+             "images will be stored. If the path is empty or does not exist "
+             "the downloaded images will not be stored on the hard drive."))
 
-        self.cancelbuttom = QtWidgets.QPushButton(self.tr("Cancel"),self)
+        self.cancelbuttom = QtWidgets.QPushButton(self.tr("Cancel"), self)
         self.cancelbuttom.clicked.connect(self.reject)
-        self.okbuttom = QtWidgets.QPushButton(self.tr("OK"),self)
+        self.okbuttom = QtWidgets.QPushButton(self.tr("OK"), self)
         self.okbuttom.clicked.connect(self.accept)
-        self.bgcolor_btm = QtWidgets.QPushButton('',self)
+        self.bgcolor_btm = QtWidgets.QPushButton('', self)
         self.bgcolor_btm.clicked.connect(self.select_color)
+        self.webcache_btm = QtWidgets.QPushButton('Web Cache', self)
+        self.webcache_btm.clicked.connect(self.select_webcache)
 
         self.setTabOrder(self.saveposition,self.scaling)
         self.setTabOrder(self.scaling,self.minscale)
@@ -214,7 +222,9 @@ class Settings(QtWidgets.QDialog):
         self.setTabOrder(self.buffernumber,self.shorttimeout)
         self.setTabOrder(self.shorttimeout,self.longtimeout)
         self.setTabOrder(self.longtimeout,self.bgcolor_btm)
-        self.setTabOrder(self.bgcolor_btm,self.okbuttom)
+        self.setTabOrder(self.bgcolor_btm,self.webcache_btm)
+        self.setTabOrder(self.webcache_btm,self.webcache)
+        self.setTabOrder(self.webcache,self.okbuttom)
         self.setTabOrder(self.okbuttom,self.cancelbuttom)
 
         hbox = QtWidgets.QHBoxLayout()
@@ -235,6 +245,7 @@ class Settings(QtWidgets.QDialog):
         layout.addRow(self.tr("&Short Timeout (ms):"),self.shorttimeout)
         layout.addRow(self.tr("&Long Timeout (ms):"),self.longtimeout)
         layout.addRow(self.tr("Background &Colorr:"),self.bgcolor_btm)
+        layout.addRow(self.webcache_btm, self.webcache)
         layout.addRow(hbox)
 
         self.setLayout(layout)
@@ -249,6 +260,7 @@ class Settings(QtWidgets.QDialog):
         self.longtimeout.setText(text_type(settings.longtimeout))
         self.overlap.setText(text_type(settings.overlap))
         self.requiredoverlap.setText(text_type(settings.requiredoverlap))
+        self.webcache.setText(text_type(settings.webcache))
         if settings.saveposition:
             self.saveposition.setCheckState(QtCore.Qt.Checked)
 
@@ -272,6 +284,7 @@ class Settings(QtWidgets.QDialog):
         # convert bool to int so QSettings will not save it as a string
         settings['saveposition'] = int(self.saveposition.isChecked())
         settings['bgcolor'] = self.bgcolor
+        settings['webcache'] = self.webcache.text()
         self.settings = self.dict2tuple(settings)
         super(Settings,self).accept()
 
@@ -280,6 +293,13 @@ class Settings(QtWidgets.QDialog):
         fmt = "QPushButton { background-color : rgba(%d,%d,%d,%d)}"
         style = fmt % self.bgcolor.getRgb()
         self.bgcolor_btm.setStyleSheet(style)
+
+    def select_webcache(self):
+        dialog = QtWidgets.QFileDialog(self)
+        dialog.setFileMode(dialog.Directory)
+        dialog.setViewMode(dialog.Detail)
+        if dialog.exec_():
+            self.webcache.setText(dialog.directory().path())
 
     @classmethod
     def dict2tuple(cls, settings):
@@ -370,7 +390,7 @@ class WorkerThread(QtCore.QThread):
 
     def run(self):
         try:
-            data = self.manager.prepare_image(self.fileinfo)
+            data = self.manager.prepare_image(self.fileinfo, self.pos)
             for k, v in data.items():
                 setattr(self, k, v)
         except WrapperIOError as err:
@@ -581,7 +601,9 @@ class ImageManager(QtCore.QObject):
             self._to_show = page
             self._load_page(page)
 
-    def set_settings(self, settings, continuous=False):
+    def set_settings(self, settings, continuous=None):
+        if continuous is None:
+            continuous = self._mover.continuous
         refresh = continuous != self._mover.continuous or \
                   settings.scaling != self.settings.scaling or \
                   settings.minscale != self.settings.minscale or \
@@ -621,18 +643,24 @@ class ImageManager(QtCore.QObject):
         self._to_show = page
         self._load_page(page)
 
-    def prepare_image(self, fileinfo):
+    def prepare_image(self, fileinfo, pos):
         """
-        Open the image referenced in fileinfo and scale at it to the correct
-        size.
+        Open the image referenced in fileinfo and scale it to the correct
+        size. It will also store the image to a cache path if it was downloaded
+        from the web and caching is active.
 
         Parameters
         ----------
         fileinfo : FileInfo
             A fileinfo object of the currently loaded wrapper
+        pos : int
+            The position of the image in the image list of the current archive.
         """
 
-        with self.wrapper.open(fileinfo,'rb') as fin:
+        with self.wrapper.open(fileinfo, 'rb') as fin:
+            if isinstance(self.wrapper, WebWrapper):
+                filename = f'{pos + 1:03d}_{fileinfo.filename}'
+                self._store_image(filename, fin.getvalue())
             img = Image.open(fin)
             origsize = img.size
             img = self._fit_image(img)
@@ -888,9 +916,9 @@ class ImageManager(QtCore.QObject):
         if csize == origsize:
             img = img.convert('RGB')
         elif csize[0] > .5*origsize[0]:
-            img = img.convert('RGB').resize(csize,Image.ANTIALIAS)
+            img = img.convert('RGB').resize(csize,Image.LANCZOS)
         else:
-            img.thumbnail(csize,Image.ANTIALIAS)
+            img.thumbnail(csize,Image.LANCZOS)
             img = img.convert('RGB')
 
         return img
@@ -1041,6 +1069,14 @@ class ImageManager(QtCore.QObject):
 
         for cind, item in iteritems(items):
             item.setVisible(cind in show_pages)
+
+    def _store_image(self, filename, data):
+        base = Path(self.settings.webcache)
+        path = Path(base, self.wrapper.filename, filename)
+        if self.settings.webcache and base.is_dir() and not path.exists():
+            path.parent.mkdir(exist_ok=True)
+            with path.open('wb') as f:
+                f.write(data)
 
     def __bool__(self):
         return self.wrapper is not None and self.page is not None
@@ -1337,7 +1373,7 @@ class ImageViewer(QtWidgets.QGraphicsView):
 
     def action_open(self):
         archives = ' '.join(f'*{ext}' for ext in ArchiveWrapper.formats)
-        dialog = QtGui.QFileDialog(self)
+        dialog = QtWidgets.QFileDialog(self)
         dialog.setFileMode(dialog.ExistingFile)
         dialog.setNameFilter(f"Archives ({archives})")
         dialog.setViewMode(dialog.Detail)

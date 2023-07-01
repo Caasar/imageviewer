@@ -9,7 +9,7 @@ import sys
 import os
 import re
 from io import BytesIO
-from six import text_type
+from pathlib import Path
 from six.moves.html_parser import HTMLParser
 from six.moves.urllib.parse import urlparse, ParseResult
 from .base import WrapperIOError, BaseWrapper
@@ -28,12 +28,11 @@ class WebIOError(WrapperIOError):
 
 class WebImage(object):
     def __init__(self,alt_urls,page_url,next_page=''):
-        dummy, filename = os.path.split(alt_urls[0])
         self.image_url = alt_urls[0]
         self.alt_urls = alt_urls
         self.page_url = page_url
         self.next_page = next_page
-        self.filename = filename or self.image_url
+        self.filename = Path(urlparse(alt_urls[0]).path).name
 
     def __hash__(self):
         return hash(self.image_url)
@@ -43,7 +42,7 @@ class ImageParser(HTMLParser):
     filtered = {'.gif'}
     minlength = 50000
 
-    def __init__(self, url):
+    def __init__(self, url, html=None):
         super(HTMLParser, self).__init__()
         self.saved_link = None
         self.imgs_lists = [list() for dummy in range(8)]
@@ -56,12 +55,9 @@ class ImageParser(HTMLParser):
         else:
             self.base_path = '/'
 
-        try:
-            with requests.get(url) as response:
-                response.raise_for_status()
-                self.feed(response.text)
-        except Exception as err:
-            WebIOError(text_type(err))
+        if html is None:
+            html = WebWrapper.load_url(url)
+        self.feed(html)
 
     def handle_starttag(self,tag,attrs):
         if tag == 'a':
@@ -145,7 +141,7 @@ class WebWrapper(BaseWrapper):
     profiles = dict()
     profile_keys = ['url', 'img', 'next']
 
-    def __init__(self,url):
+    def __init__(self, url):
         self.path = url
         self.mode = 'r'
         self.handle = None
@@ -156,10 +152,19 @@ class WebWrapper(BaseWrapper):
                 self.sel_img = paths['img']
                 self.sel_next = paths['next']
 
+        html = self.load_url(url)
+        soup = BeautifulSoup(html, "html.parser")
+
         if self.sel_img:
-            self._filelist = self._parse_url(url)
+            self._filelist = self._parse_url(url, soup)
         else:
-            self._filelist = [ImageParser(url).find_image()]
+            self._filelist = [ImageParser(url, html).find_image()]
+
+        if soup.title is None:
+            parse = urlparse(url)
+            self.filename = Path(parse.path).stem
+        else:
+            self.filename = soup.title.text.strip().replace(' ', '_')
 
     @property
     def filelist(self):
@@ -203,14 +208,9 @@ class WebWrapper(BaseWrapper):
     def list_archives(self):
         return [], 0
 
-    def _parse_url(self, url):
-        try:
-            with requests.get(url) as resp:
-                html_doc = resp.text
-        except Exception as e:
-            raise WebIOError(str(e))
-
-        soup = BeautifulSoup(html_doc, "html.parser")
+    def _parse_url(self, url, soup=None):
+        if soup is None:
+            soup = BeautifulSoup(self._load_url(url), "html.parser")
 
         try:
             nodes = bs4_select(soup, self.sel_next)
@@ -270,3 +270,12 @@ class WebWrapper(BaseWrapper):
 
         return ParseResult(*furl).geturl()
 
+    @classmethod
+    def load_url(cls, url):
+        try:
+            with requests.get(url) as resp:
+                resp.raise_for_status()
+                html = resp.text
+        except Exception as e:
+            raise WebIOError(str(e))
+        return html
