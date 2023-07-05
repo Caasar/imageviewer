@@ -561,6 +561,7 @@ class ImageManager(QtCore.QObject):
         self._movers = dict((m.name, m) for m in movers)
         self._mover = None
         self._to_show = None
+        self._use_webcache = False
 
         # set the first mover as the default one
         self.mover = self.movers[0]
@@ -601,9 +602,11 @@ class ImageManager(QtCore.QObject):
             self._to_show = page
             self._load_page(page)
 
-    def set_settings(self, settings, continuous=None):
+    def set_settings(self, settings, continuous=None, use_webcache=None):
         if continuous is None:
             continuous = self._mover.continuous
+        if use_webcache is not None:
+            self._use_webcache = use_webcache
         refresh = continuous != self._mover.continuous or \
                   settings.scaling != self.settings.scaling or \
                   settings.minscale != self.settings.minscale or \
@@ -658,7 +661,7 @@ class ImageManager(QtCore.QObject):
         """
 
         with self.wrapper.open(fileinfo, 'rb') as fin:
-            if isinstance(self.wrapper, WebWrapper):
+            if isinstance(self.wrapper, WebWrapper) and self._use_webcache:
                 filename = f'{pos + 1:03d}_{fileinfo.filename}'
                 self._store_image(filename, fin.getvalue())
             img = Image.open(fin)
@@ -1194,6 +1197,11 @@ class ImageViewer(QtWidgets.QGraphicsView):
                          shortcut=QtGui.QKeySequence(QtCore.Qt.Key_Escape),
                          statusTip=self.tr("Close Viewer"),
                          triggered=self.close)
+        actions['webcache'] = QtWidgets.QAction(self.tr("Use Webcache"), self,
+                         shortcut=QtGui.QKeySequence(QtCore.Qt.Key_U),
+                         checkable=True,
+                         statusTip=self.tr("Automatically store downloaded images"),
+                         triggered=self.action_toggle_webcache)
 
         self.writing = []
         self.auto_writing = set()
@@ -1302,6 +1310,7 @@ class ImageViewer(QtWidgets.QGraphicsView):
             c_menu.addAction(c_auto)
             c_menu.addAction(c_close)
         sv_menu.addAction(self.actions['save'])
+        sv_menu.addAction(self.actions['webcache'])
 
         menu.addAction(self.actions['prev_file'])
         menu.addAction(self.actions['reload'])
@@ -1467,6 +1476,10 @@ class ImageViewer(QtWidgets.QGraphicsView):
             self.settings = dialog.settings
             self.manager.set_settings(dialog.settings)
 
+            valid_path = \
+                self.settings.webcache and Path(self.settings.webcache).is_dir()
+            self.actions['webcache'].setEnabled(bool(valid_path))
+
             if osettings.bgcolor != self.settings.bgcolor:
                 self.scene().setBackgroundBrush(self.settings.bgcolor)
 
@@ -1527,7 +1540,11 @@ class ImageViewer(QtWidgets.QGraphicsView):
 
     def action_toggle_continuous(self):
         continuous = self.actions['continuous'].isChecked()
-        self.manager.set_settings(self.settings, continuous)
+        self.manager.set_settings(self.settings, continuous=continuous)
+
+    def action_toggle_webcache(self):
+        use_webcache = self.actions['webcache'].isChecked()
+        self.manager.set_settings(self.settings, use_webcache=use_webcache)
 
     def action_reload(self):
         infos = self.manager.page_description
@@ -1580,11 +1597,13 @@ class ImageViewer(QtWidgets.QGraphicsView):
 
     def save_settings(self):
         isContinuous = self.actions['continuous'].isChecked()
+        useWebcache = self.actions['webcache'].isChecked()
 
         settings = QtCore.QSettings("Caasar", "Image Viewer")
         settings.beginGroup("MainWindow")
         settings.setValue("fullscreen", self.isFullScreen())
         settings.setValue("continuous", isContinuous)
+        settings.setValue("webcache", useWebcache)
         if not self.isFullScreen():
             settings.setValue("pos", self.pos())
             settings.setValue("size", self.size())
@@ -1619,6 +1638,7 @@ class ImageViewer(QtWidgets.QGraphicsView):
         self.move(settings.value("pos", QtCore.QPoint(100, 100)))
         isFullscreen = settings.value("fullscreen", 'false') == 'true'
         isContinuous = settings.value("continuous", 'false') == 'true'
+        useWebcache = settings.value("webcache", 'false') == 'true'
         self.manager.mover = settings.value("movement", "")
         for act in self.actions['movement'].actions():
             if act.text() == self.manager.mover:
@@ -1632,7 +1652,8 @@ class ImageViewer(QtWidgets.QGraphicsView):
                 value = type(defvalue)(value)
             csettings[key] = value
         self.settings = Settings.dict2tuple(csettings)
-        self.manager.set_settings(self.settings, isContinuous)
+        self.manager.set_settings(self.settings, continuous=isContinuous,
+                                  use_webcache=useWebcache)
         settings.endGroup()
 
         self.scene().setBackgroundBrush(self.settings.bgcolor)
@@ -1656,6 +1677,11 @@ class ImageViewer(QtWidgets.QGraphicsView):
             self.actions['fullscreen'].setChecked(QtCore.Qt.Checked)
         if isContinuous:
             self.actions['continuous'].setChecked(QtCore.Qt.Checked)
+        if useWebcache:
+            self.actions['webcache'].setChecked(QtCore.Qt.Checked)
+
+        valid_path = self.settings.webcache and Path(self.settings.webcache).is_dir()
+        self.actions['webcache'].setEnabled(bool(valid_path))
         return isFullscreen
 
     def _update_info(self):
