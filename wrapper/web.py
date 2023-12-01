@@ -165,6 +165,7 @@ class WebWrapper(BaseWrapper):
             self.filename = Path(parse.path).stem
         else:
             self.filename = soup.title.text.strip().replace(' ', '_')
+            self.filename = re.sub(r'[^\w\s-]', '', self.filename)
 
     @property
     def filelist(self):
