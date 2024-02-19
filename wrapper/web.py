@@ -43,7 +43,7 @@ class ImageParser(HTMLParser):
     minlength = 50000
 
     def __init__(self, url, html=None):
-        super(HTMLParser, self).__init__()
+        super().__init__()
         self.saved_link = None
         self.imgs_lists = [list() for dummy in range(8)]
 
@@ -211,7 +211,7 @@ class WebWrapper(BaseWrapper):
 
     def _parse_url(self, url, soup=None):
         if soup is None:
-            soup = BeautifulSoup(self._load_url(url), "html.parser")
+            soup = BeautifulSoup(self.load_url(url), "html.parser")
 
         try:
             nodes = bs4_select(soup, self.sel_next)
@@ -223,7 +223,7 @@ class WebWrapper(BaseWrapper):
         try:
             nodes = bs4_select(soup, self.sel_img)
         except SelectorError as err:
-            raise WebIOError('BeautifulSoup parse error: %s' % err.message)
+            raise WebIOError(f'BeautifulSoup parse error: {err}') from err
 
         images = [self._builditem(node, url, next_url) for node in nodes]
 
